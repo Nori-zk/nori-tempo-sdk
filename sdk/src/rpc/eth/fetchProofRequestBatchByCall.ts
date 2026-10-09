@@ -1,6 +1,6 @@
 import { Contract } from 'ethers';
-import { NoriProofRequestQueue__factory } from '@nori-zk/ethereum-solana-bridge';
-import type { EthereumProvider } from '@nori-zk/ethereum-solana-bridge/iso-provider';
+import { NoriProofRequestQueue__factory } from '@nori-zk/ethereum-tempo-bridge';
+import type { EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
 import { withBackoff } from '../../utils/withBackoff.js';
 import { type ProofRequestRecord } from './fetchProofRequestBatch.js';
 
@@ -76,7 +76,7 @@ export default async function fetchProofRequestBatchByCall(
                 target: request.target as string,
                 slotKey: request.slotKey as string,
                 collectionKeysCount,
-                collectionKeys: (request.collectionKeys as string[]).slice(0, collectionKeysCount),
+                collectionKeys: [...(request.collectionKeys as string[])].slice(0, collectionKeysCount),
             });
         });
     }

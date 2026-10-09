@@ -25,7 +25,7 @@ const RECORDED_FINALITY = {
 };
 
 describe('commit times', () => {
-    test('counts only the stages of the job the Solana loop goes through', () => {
+    test('counts only the stages of the job the Tempo loop goes through', () => {
         expect(jobTimingsOf(RECORDED_TIMINGS)).toEqual({
             BridgeHeadJobCreated: 80.926502298,
             BridgeHeadJobSucceeded: 1,

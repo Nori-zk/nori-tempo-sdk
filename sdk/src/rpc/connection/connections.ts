@@ -1,4 +1,4 @@
-import { type EthereumProvider } from '@nori-zk/ethereum-solana-bridge/iso-provider';
+import { type EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
 import { type BrowserProvider, isError } from 'ethers';
 import {
     BehaviorSubject,
@@ -31,18 +31,13 @@ import {
 } from '../eth/walletSubscriptions.js';
 import { noriWebsocket } from '../nori/noriWebsocket.js';
 import {
-    PUBLIC_SOLANA_CLUSTERS,
-    type SolanaCluster,
-    solanaHttp,
-    type SolanaHttp,
-} from '../solana/solanaHttp.js';
-import {
-    solanaWebsocket,
-    type SolanaWebsocket,
-    solanaWebsocketUrlOf,
-} from '../solana/solanaWebsocket.js';
+    PUBLIC_TEMPO_NETWORKS,
+    type TempoNetwork,
+    tempoWebsocketUrlOf,
+} from '../tempo/tempoNetworks.js';
 import {
     ConnectionNotReadyError,
+    type EvmChainName,
     type TransportName,
     type TransportState,
 } from './connectionNotReady.js';
@@ -87,12 +82,6 @@ export interface EthereumTransports {
         | 'reportReadFailed'
         | 'close'
     >;
-}
-
-/** What makes up the Solana chain object. */
-export interface SolanaTransports {
-    http: Pick<SolanaHttp, 'connection' | 'current' | 'reportReadFailed' | 'close'>;
-    websocket: Pick<SolanaWebsocket, 'connection' | 'socket'> & { close(): void };
 }
 
 /** The node a transport is usable in: `open` for a websocket, `ready` otherwise. */
@@ -176,33 +165,37 @@ function orderFor<TTransport extends RequestTransport>(
 }
 
 /**
- * The Ethereum chain object over the transports the app configured: each
- * transport with its machine, `ready()` and `close()`, and `forCalls`,
- * `forLogs` and `forSubscriptions`, which go through them in the caller's
- * order.
+ * An EVM chain object (Ethereum's, or Tempo's) over the transports the app
+ * configured: each transport with its machine, `ready()` and `close()`, and
+ * `forCalls`, `forLogs` and `forSubscriptions`, which go through them in the
+ * caller's order.
  *
  * @param transports The configured transports.
  * @param order The caller's order per kind of request.
  * @param pollIntervalMs How often a subscription polls while it polls.
- * @returns The Ethereum chain object.
+ * @param chainName The chain, which names its transports (`ethereum.http`, `tempo.http`, ...).
+ * @returns The chain object.
  */
 export function ethereumChain(
     transports: EthereumTransports,
     order: EthereumOrder = {},
-    pollIntervalMs = 15_000
+    pollIntervalMs = 15_000,
+    chainName: EvmChainName = 'ethereum'
 ) {
     const { http, websocket, wallet } = transports;
     const configured = (transport: RequestTransport) => transports[transport] !== undefined;
+    const transportName = (transport: RequestTransport): TransportName =>
+        `${chainName}.${transport}`;
     const ready = {
-        http: readyOf('ethereum.http', http, 'ready', () => new NoEthereumHttpConfiguredError()),
+        http: readyOf(transportName('http'), http, 'ready', () => new NoEthereumHttpConfiguredError()),
         websocket: readyOf(
-            'ethereum.websocket',
+            transportName('websocket'),
             websocket,
             'open',
             () => new NoEthereumWebsocketConfiguredError()
         ),
         wallet: readyOf<EthereumProvider>(
-            'ethereum.wallet',
+            transportName('wallet'),
             wallet,
             'ready',
             () => new NoWalletConfiguredError()
@@ -248,7 +241,7 @@ export function ethereumChain(
                 if (!neverReachedNode(error)) throw error;
                 report[transport]();
                 notReady.push({
-                    transport: `ethereum.${transport}`,
+                    transport: transportName(transport),
                     state: { node: 'noResponse', data: { error: messageOf(error) } },
                 });
             }
@@ -348,7 +341,7 @@ export function ethereumChain(
         wallet: {
             connection: wallet?.connection,
             ready: readyOf<BrowserProvider>(
-                'ethereum.wallet',
+                transportName('wallet'),
                 wallet,
                 'ready',
                 () => new NoWalletConfiguredError()
@@ -492,30 +485,20 @@ export function ethereumCallsUsable$(
     return internals.get(ethereum)?.callsUsable$(whileChecking) ?? of(false);
 }
 
-/**
- * The Solana chain object: http (one transport per kind of request) and
- * the websocket.
- *
- * @param transports The transports.
- * @returns The Solana chain object.
- */
-export function solanaChain({ http, websocket }: SolanaTransports) {
-    return {
-        http: {
-            connection: http.connection,
-            ready: readyOf('solana.http', http, 'ready'),
-            close: () => http.close(),
-        },
-        websocket: {
-            connection: websocket.connection,
-            socket: websocket.socket,
-            close: () => websocket.close(),
-        },
-    };
-}
+/** The Tempo chain: an EVM chain object over Tempo's transports. */
+export type Tempo = Ethereum;
 
-/** The Solana chain: http and the websocket. */
-export type Solana = ReturnType<typeof solanaChain>;
+/**
+ * Tempo's order by default, one transport per kind of request: calls and
+ * logs over http, subscriptions over the websocket. The wallet serves only
+ * the app's own Tempo transactions, as a browser wallet is on one chain at a
+ * time and the app signs its Ethereum transactions through it.
+ */
+const DEFAULT_TEMPO_ORDER: EthereumOrder = {
+    calls: ['http'],
+    logs: ['http'],
+    subscriptions: ['websocket'],
+};
 
 /** Options for `createConnections`: which transports the app has, and settings for all of them. */
 export interface ConnectionsOptions {
@@ -526,16 +509,20 @@ export interface ConnectionsOptions {
         wallet?: true;
         order?: EthereumOrder;
     };
-    solana:
+    tempo:
         | {
-              cluster: SolanaCluster;
-              http?: { rpcUrls: string[] };
+              network: TempoNetwork;
+              http?: { rpcUrl: string };
               websocket?: { url: string };
+              wallet?: true;
+              order?: EthereumOrder;
           }
         | {
-              expectedGenesisHash: string;
-              http: { rpcUrls: string[] };
+              expectedChainId: bigint;
+              http: { rpcUrl: string };
               websocket?: { url: string };
+              wallet?: true;
+              order?: EthereumOrder;
           };
     nori?: { websocket?: { url: string } };
     healthChecks?: { intervalMs?: number; timeoutMs?: number };
@@ -547,12 +534,12 @@ export interface ConnectionsOptions {
 /**
  * Opens every transport the app names, each with its machine, all
  * following one network machine: Ethereum's http, websocket and wallet as
- * configured; Solana's http (the cluster's public URL by default) and
- * websocket (the http URL over wss by default); Nori's websocket. Health
+ * configured; Tempo's http and websocket (the network's public endpoints
+ * by default) and its wallet when asked for; Nori's websocket. Health
  * checks and retries are set once for all of them.
  *
  * @param options The transports and their settings.
- * @returns `network`, `ethereum`, `solana`, `nori`, and `close()` for everything.
+ * @returns `network`, `ethereum`, `tempo`, `nori`, and `close()` for everything.
  */
 export function createConnections(options: ConnectionsOptions) {
     const { network, close: closeNetwork }: NetworkMachine = createNetworkMachine(options.network);
@@ -590,30 +577,25 @@ export function createConnections(options: ConnectionsOptions) {
         resolveHealthCheckTimings(timings).healthCheckIntervalMs
     );
 
-    const solanaOptions = options.solana;
-    const solanaRpcUrls =
-        solanaOptions.http?.rpcUrls ??
-        ('cluster' in solanaOptions ? [PUBLIC_SOLANA_CLUSTERS[solanaOptions.cluster].rpcUrl] : []);
-    const solanaWs = solanaWebsocket(
+    // Tempo always opens http and its websocket: the public network's
+    // endpoints by default, the websocket on the http URL's host.
+    const tempoOptions = options.tempo;
+    const publicTempo = 'network' in tempoOptions ? PUBLIC_TEMPO_NETWORKS[tempoOptions.network] : undefined;
+    const tempoChainId = publicTempo?.chainId ?? (tempoOptions as { expectedChainId: bigint }).expectedChainId;
+    const tempoRpcUrl = tempoOptions.http?.rpcUrl ?? (publicTempo as { rpcUrl: string }).rpcUrl;
+    const tempoWssUrl =
+        tempoOptions.websocket?.url ??
+        (tempoOptions.http === undefined && publicTempo ? publicTempo.wssUrl : tempoWebsocketUrlOf(tempoRpcUrl));
+    const tempo: Tempo = ethereumChain(
         {
-            url: solanaOptions.websocket?.url ?? solanaWebsocketUrlOf(solanaRpcUrls[0]),
-            ...websocketSettings,
+            http: ethereumHttp({ expectedChainId: tempoChainId, rpcUrl: tempoRpcUrl, ...timings }, network),
+            websocket: ethereumWebsocket({ url: tempoWssUrl, ...websocketSettings }, network, tempoChainId),
+            wallet: tempoOptions.wallet && ethereumWallet({ expectedChainId: tempoChainId, ...timings }, network),
         },
-        network
+        tempoOptions.order ?? DEFAULT_TEMPO_ORDER,
+        resolveHealthCheckTimings(timings).healthCheckIntervalMs,
+        'tempo'
     );
-    const solana = solanaChain({
-        http: solanaHttp(
-            'cluster' in solanaOptions
-                ? { cluster: solanaOptions.cluster, rpcUrls: solanaOptions.http?.rpcUrls, ...timings }
-                : {
-                      expectedGenesisHash: solanaOptions.expectedGenesisHash,
-                      rpcUrls: solanaOptions.http.rpcUrls,
-                      ...timings,
-                  },
-            network
-        ),
-        websocket: { ...solanaWs, close: () => solanaWs.socket.complete() },
-    });
 
     const noriWs = noriWebsocket(
         { ...websocketSettings, url: options.nori?.websocket?.url },
@@ -626,14 +608,15 @@ export function createConnections(options: ConnectionsOptions) {
     return {
         network: { connection: network },
         ethereum,
-        solana,
+        tempo,
         nori,
         close: () => {
             ethereum.http.close();
             ethereum.websocket.close();
             ethereum.wallet.close();
-            solana.http.close();
-            solana.websocket.close();
+            tempo.http.close();
+            tempo.websocket.close();
+            tempo.wallet.close();
             nori.websocket.close();
             closeNetwork();
         },

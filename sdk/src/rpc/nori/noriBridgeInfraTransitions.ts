@@ -23,7 +23,7 @@ import { type AsNodeData } from '../../utils/machines.js';
  *   `BridgeHeadAdvanced` → the next `BridgeHeadJobCreated`.
  * - `BridgeHeadJobFailed`: the proof is staged again (`BridgeHeadJobCreated`).
  * - `…SubmitFailed` or `…FinalizationFailed`: the bridge head checks the Nori
- *   program on Solana. Still aligned, it stages the job again
+ *   contract on Tempo. Still aligned, it stages the job again
  *   (`BridgeHeadJobCreated`); moved on, it advances to it (`BridgeHeadAdvanced`).
  */
 export const NoriBridgeInfraTransitionGraph = define({

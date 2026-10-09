@@ -31,4 +31,6 @@ export interface Artifact {
 export const noriTokenBridgeJson: Artifact = noriTokenBridgeRaw as Artifact;
 export const noriProofRequestQueueJson: Artifact = noriProofRequestQueueRaw as Artifact;
 
+export * from './contracts/NoriTokenBridge.const.js';
+export * from './contracts/NoriProofRequestQueue.const.js';
 export * from './types/ethers-contracts/index.js';

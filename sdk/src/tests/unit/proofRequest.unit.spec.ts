@@ -1,9 +1,10 @@
 import { createProofRequestStateMachine } from '../../proofRequest/proofRequest.impl.js';
 import { ProofRequestState } from '../../proofRequest/types.js';
 import {
+    BRIDGE_ADDRESS,
     createContiguousBatches,
     createFakeEthereumProvider,
-    createFakeSolanaRpc,
+    createFakeTempoProvider,
     createTestConnections,
     FAST_TIMINGS,
     QUEUE_ADDRESS,
@@ -29,24 +30,25 @@ async function setUp(latestBlock: number, queueCursor: number) {
     const ethereum = createFakeEthereumProvider(createRequests(), {
         latestBlock,
     });
-    const solana = await createFakeSolanaRpc(batchesUpTo(queueCursor));
-    const test = createTestConnections(ethereum.provider, solana.rpc);
+    const tempo = createFakeTempoProvider(batchesUpTo(queueCursor));
+    const test = createTestConnections(ethereum.provider, tempo.provider);
     await Promise.all([
         reach(test.connections.ethereum.http.connection, 'ready'),
-        reach(test.connections.solana.http.connection, 'ready'),
+        reach(test.connections.tempo.http.connection, 'ready'),
     ]);
-    return { ethereum, solana, ...test };
+    return { ethereum, tempo, ...test };
 }
 
 const follow = (requestId: bigint) => ({
     proofQueueAddress: QUEUE_ADDRESS,
+    bridgeAddress: BRIDGE_ADDRESS,
     proofRequestTxHash: transactionHashOf(requestId),
 });
 
 describe('proof request state machine', () => {
     test('waits for an unmined transaction, then follows the request until a batch covers it', async () => {
         // Request 10 is at block 130; the chain is at block 120.
-        const { ethereum, solana, connections, close } = await setUp(120, 8);
+        const { ethereum, tempo, connections, close } = await setUp(120, 8);
         const { proofRequestState, close: closeRequest } =
             createProofRequestStateMachine(
                 connections,
@@ -70,7 +72,7 @@ describe('proof request state machine', () => {
             })
         );
 
-        await solana.setBatches(batchesUpTo(12));
+        await tempo.setBatches(batchesUpTo(12));
         const available = await reach(proofRequestState, 'proofAvailable');
         expect(available.data).toEqual(
             expect.objectContaining({
@@ -84,7 +86,7 @@ describe('proof request state machine', () => {
     });
 
     test('resumes from a known snapshot without looking the request up again', async () => {
-        const { connections, solana, close } = await setUp(200, 4);
+        const { connections, tempo, close } = await setUp(200, 4);
         const { proofRequestState, close: closeRequest } =
             createProofRequestStateMachine(
                 connections,
@@ -101,7 +103,7 @@ describe('proof request state machine', () => {
                 FAST_TIMINGS
             );
         const visited = recordNodes(proofRequestState);
-        await solana.setBatches(batchesUpTo(8));
+        await tempo.setBatches(batchesUpTo(8));
         await reach(proofRequestState, 'proofAvailable');
         expect(visited[0]).toBe('unprocessed');
         expect(visited).not.toContain('undetermined');
@@ -110,7 +112,7 @@ describe('proof request state machine', () => {
     });
 
     test('going offline is waited for, and following resumes where it was', async () => {
-        const { connections, network$, solana, close } = await setUp(200, 4);
+        const { connections, network$, tempo, close } = await setUp(200, 4);
         const { proofRequestState, close: closeRequest } =
             createProofRequestStateMachine(
                 connections,
@@ -129,10 +131,10 @@ describe('proof request state machine', () => {
         expect(waiting.data).toEqual(
             expect.objectContaining({
                 requestId: 6n,
-                waitingOn: ['ethereum', 'solana'],
+                waitingOn: ['ethereum', 'tempo'],
             })
         );
-        await solana.setBatches(batchesUpTo(8));
+        await tempo.setBatches(batchesUpTo(8));
         network$.next('online');
         await reach(proofRequestState, 'proofAvailable');
         closeRequest();

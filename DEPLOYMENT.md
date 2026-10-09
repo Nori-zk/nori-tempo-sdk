@@ -1,25 +1,26 @@
-# Nori Ethereum→Solana Bridge — Production Deployment Runbook
+# Nori Ethereum→Tempo Bridge — Production Deployment Runbook
 
-End-to-end procedure to deploy the ETH→SOL bridge: the Ethereum contracts
-(`ethereum/`) and the Solana program (`programs/token`). Numbered steps record
-values into the deployment ledger (§8).
+End-to-end procedure to deploy the ETH→Tempo bridge: the Ethereum contracts
+(`ethereum/`) and the Tempo contracts (`tempo/`). Numbered steps record values
+into the deployment ledger (§8).
 
 ---
 
 ## 0. Inputs and conventions
 
-| Symbol     | Meaning                                  |
-| ---------- | ---------------------------------------- |
-| `Operator` | The Ethereum SAFE multisig               |
-| `Timelock` | OZ `TimelockController` instance         |
-| `EthBridge` | The deployed `NoriTokenBridge.sol` address |
-| `EthQueue` | The deployed `NoriProofRequestQueue.sol` address |
-| `Program`  | The deployed Solana `token` program id   |
+| Symbol      | Meaning                                          |
+| ----------- | ------------------------------------------------ |
+| `Operator`  | The Ethereum SAFE multisig                       |
+| `Timelock`  | OZ `TimelockController` instance                 |
+| `EthBridge` | The deployed `NoriTokenBridge.sol` address       |
+| `EthQueue`  | The deployed `NoriProofRequestQueue.sol` address |
+| `Bridge`    | The deployed `NoriTempoTokenBridge` address      |
+| `Token`     | The bridged nETH TIP-20 address                  |
 
-- All `bytes32` values are 0x-prefixed 64 hex characters (big-endian).
-- All Ethereum addresses are 0x-prefixed 40 hex characters.
-- The Solana bridge state PDA and mint PDA are derived from the program id;
-  they are not inputs.
+- All `bytes32` values are 64 hex characters (big-endian); the Tempo deploy
+  takes them without the `0x` prefix.
+- All Ethereum addresses are 40 hex characters; the Tempo deploy takes them
+  without the `0x` prefix.
 
 ---
 
@@ -108,106 +109,185 @@ cast call <EthBridge> "proofQueue()(address)"         # == EthQueue
 cast call <EthBridge> "feeRecipient()(address)"
 ```
 
-`EthBridge` and `EthQueue` are the `eth_token_bridge_address` and
-`eth_proof_queue_address` for the Solana `initialize` in §6.
+`EthBridge` and `EthQueue` are the `ethTokenBridgeAddressHex` and
+`ethProofQueueAddressHex` of the Tempo deploy in §5.
 
 ---
 
-## 4. Record bridge integrity constants
+## 4. Record the bridge's program vkey and start store hash
 
-Fixed by the [nori-bridge-head](https://github.com/Nori-zk/nori-bridge-head)
-circuit build, not generated at deploy. Pull them from the build that produced
-the SP1 vkey and freeze them.
+### Program vkey
+
+`noriBridgeVk` is fixed by the [nori-bridge-head](https://github.com/Nori-zk/nori-bridge-head)
+program build, not chosen at deploy. The deploy reads it from
+`@nori-zk/tempo-zk-utils` (`bridgeHeadNoriSP1HeliosProgramVk`, the integrity
+file `tempo-zk-utils/src/integrity/nori-sp1-helios-program.vk.json`, a copy of
+bridge-head's `nori-elf/nori-sp1-helios-program.vk.json`). Check that the
+release in use carries the vkey of the bridge head that will prove.
+
+### Start store hash
+
+The Tempo bridge starts at head 0 and queue cursor 0. Its first `update` is
+any proof whose input store hash matches the store hash given at deploy, so
+pick the Helios store the bridge head will resume from and take its
+`input_store_hash` (64 hex characters, no `0x` prefix).
 
 ### Record
 
-- [ ] `noriBridgeVk` (bytes32) — SP1 vkey hash of the bridge-head program
-- [ ] `initialVerifiedStateRoot` (bytes32) — execution state root at the chosen start block
-- [ ] `initialStoreHash` (bytes32) — Helios store input hash at the start point
-- [ ] `initialQueueCursor` (u64) — `0` if the queue is fresh; otherwise the
-      queue's settled cursor at the start point
+- [ ] `noriBridgeVk` (bytes32)
+- [ ] `initialStoreHash` (bytes32)
 
 ---
 
-## 5. Build and deploy the Solana program
+## 5. Deploy the Tempo contracts
+
+`npm run deploy` (tempo/tasks/deploy.ts) deploys, in one run:
+
+1. the SP1 v6.1.0 Groth16 verifier (sp1-contracts, pinned in
+   `tempo/foundry.lock`), unless `TEMPO_SP1_VERIFIER_ADDRESS` names Succinct's
+   (Tempo mainnet: `0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2`);
+2. the nETH TIP-20 through Tempo's `TIP20Factory`, with the deployer as its
+   admin and pathUSD as its quote token;
+3. `NoriTempoTokenBridge` — args: `(verifier, noriBridgeVk, token, initialStoreHash, EthBridge, EthQueue)`;
+4. `ISSUER_ROLE` on the token for the bridge, so only the bridge mints.
+
+### Required env
 
 ```bash
-CFLAGS="-isystem $HOME/.cache/solana/v1.54/platform-tools/llvm/sbpf/include" \
-    cargo build-sbf --manifest-path programs/token/Cargo.toml
-solana program deploy target/deploy/token.so   # --url per target cluster
+TEMPO_NETWORK=<moderato | mainnet>
+TEMPO_RPC_NETWORK_URL=<rpc url>
+TEMPO_PRIVATE_KEY=<deployer key, holding a fee token such as pathUSD>
+TEMPO_SP1_VERIFIER_ADDRESS=<Succinct's verifier, or empty to deploy one>
 ```
 
-> The alloy tree is pinned to 1.6.3 in Cargo.lock because the SBF toolchain
-> ships rustc 1.89 (alloy 1.7+ requires 1.91). The `CFLAGS` line points
-> ring's C build at the platform-tools freestanding headers. Both are also
-> noted in README.md.
-
-### Record
-
-- [ ] `Program`: the deployed program id
-- [ ] `ProgramSoSha256`: sha256 of the deployed `.so`
-
-The program id is also the derive base for the state PDA (`[b"STATE"]`) and
-mint PDA (`[b"NETH"]`) — record the derived addresses after §6.
-
----
-
-## 6. Initialize the Solana bridge state
-
-One `initialize` call creates the state PDA and the SPL mint (6 decimals,
-mint & freeze authority = state PDA) and pins the integrity constants.
-
-Init values (`NoriSolTokenBridgeInit`):
-
-| Field                          | Source                    |
-| ------------------------------ | ------------------------- |
-| `verified_state_root`          | §4 `initialVerifiedStateRoot` |
-| `latest_helios_store_input_hash` | §4 `initialStoreHash`   |
-| `eth_proof_queue_address`      | §3 `EthQueue`             |
-| `eth_token_bridge_address`     | §3 `EthBridge`            |
-| `latest_head`                  | beacon slot at the start point — the first `update` must resume from it |
-| `queue_cursor`                 | §4 `initialQueueCursor`   |
-
-The transaction payer becomes `authority` in the stored state. `update` is
-permissionless (only a valid proof matters), so `authority` currently has no
-privileged instruction — keep it a controlled key regardless.
-
-Every `update` whose batch drains at least one proof request creates a
-proof queue batch account (`[b"PROOF_QUEUE_BATCH", index]`, 64 bytes), and
-the `update` payer funds its rent exemption (~0.0013 SOL) on top of the
-transaction fee. Updates with empty batches pay only the fee. Keep the
-submitter's payer keypair (`SOLANA_PAYER_KEYPAIR_PATH`) funded for this.
-
-Send it with `nori-cli` from the repo root. With `--proof`, the store hash,
-queue address, `latest_head` and `queue_cursor` come from the first `update`
-proof's input side, and the CLI checks that the proof's vkey matches the
-`nori_bridge_vk` `initialize` pins; without `--proof`, pass all six fields
-(`--latest-helios-store-input-hash`, `--eth-proof-queue-address`,
-`--latest-head`, `--queue-cursor`).
+### Run
 
 ```bash
-cargo run -p nori-cli -- initialize \
-    --url <rpc-url> \
-    --keypair <payer-keypair.json> \
-    --proof <first-update-proof.json> \
-    --verified-state-root <initialVerifiedStateRoot> \
-    --eth-token-bridge-address <EthBridge> \
+cd tempo
+npm run deploy -- <initialStoreHash> <EthBridge> <EthQueue>
+```
+
+`nori-cli` deploys the same contracts from Rust, reading the same env:
+
+```bash
+cargo run -p nori-cli -- deploy <initialStoreHash> <EthBridge> <EthQueue> \
     --dry-run   # remove to send; asks for confirmation unless --yes
 ```
 
-`--url`, `--keypair` and `--program-id` fall back to
-`SOLANA_RPC_NETWORK_URL`, `SOLANA_PAYER_KEYPAIR_PATH` and
-`NORI_SOL_TOKEN_PROGRAM_ID` (a `.env` in the working directory is read);
-`--program-id` defaults to the program's declared id. The CLI refuses when no
-executable program is at the program id or the state PDA already exists, and
-prints the state and mint PDAs, the init values and the tx signature for the
-record below.
+Addresses are written to `tempo/.env.nori-tempo-token-bridge` (`nori-cli`
+prints the same lines).
 
 ### Record
 
-- [ ] Initialize tx signature
-- [ ] State PDA, mint PDA addresses
-- [ ] Submitter payer pubkey and its funding source
+- [ ] `Bridge`: `0x...` (`NORI_TEMPO_TOKEN_BRIDGE_ADDRESS`)
+- [ ] `Token`: `0x...` (`NORI_TEMPO_TOKEN_ADDRESS`)
+- [ ] Bridge deploy block (`NORI_TEMPO_TOKEN_BRIDGE_DEPLOY_BLOCK`)
+- [ ] Verifier (`TEMPO_SP1_VERIFIER_ADDRESS`)
+
+### Verify
+
+```bash
+cast call <Bridge> "noriBridgeVk()(bytes32)"                 # == noriBridgeVk
+cast call <Bridge> "latestHeliosStoreInputHash()(bytes32)"   # == initialStoreHash
+cast call <Bridge> "ethTokenBridgeAddress()(address)"        # == EthBridge
+cast call <Bridge> "ethProofQueueAddress()(address)"         # == EthQueue
+cast call <Token> "hasRole(address,bytes32)(bool)" <Bridge> $(cast keccak ISSUER_ROLE)   # == true
+```
+
+### Register the ERC-20 mirrors
+
+Each ERC-20 that users lock with `NoriTokenBridge.lockERC20` is minted on
+Tempo as its own TIP-20 mirror, and `mintERC20` reverts with `NoMirror` until
+that mirror exists. Only the bridge's deployer (`mirrorAdmin`, fixed at
+deploy) can create one, so run this once per ERC-20 with the deployer's env
+from above and `NORI_TEMPO_TOKEN_BRIDGE_ADDRESS` set:
+
+```bash
+cd tempo
+npm run register-mirror -- <ethToken> <name> <symbol> <currency>
+```
+
+The bridge creates the TIP-20 through `TIP20Factory`, with itself as admin
+and pathUSD as quote token, and grants itself `ISSUER_ROLE`, `PAUSE_ROLE` and
+`UNPAUSE_ROLE`, so only proven deposits mint it and only proven pause states
+pause it. The currency is fixed at creation: `USD` makes the mirror a Tempo
+fee token, any other ISO 4217 code does not. A second registration for the
+same ERC-20 reverts with `MirrorExists`.
+
+*Output on a local `anvil --network tempo`, for mainnet USDC:*
+
+```
+[RegisterMirror] Mirror of 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48: 0x20C0000000000000000000003E14745cBAe3d986 (nUSDC), block 1161
+```
+
+### Record
+
+- [ ] Per ERC-20: its Ethereum address, its mirror's address, the mirror's currency
+
+### Verify
+
+```bash
+cast call <Bridge> "mirrorAdmin()(address)"                     # == the deployer
+cast call <Bridge> "mirrorOf(address)(address)" <ethToken>      # == the mirror
+cast call <Mirror> "currency()(string)"                         # == <currency>
+cast call <Mirror> "hasRole(address,bytes32)(bool)" <Bridge> $(cast keccak ISSUER_ROLE)    # == true
+cast call <Mirror> "hasRole(address,bytes32)(bool)" <Bridge> $(cast keccak PAUSE_ROLE)     # == true
+cast call <Mirror> "hasRole(address,bytes32)(bool)" <Bridge> $(cast keccak UNPAUSE_ROLE)   # == true
+```
+
+---
+
+## 6. Run the proof submitter
+
+`update` is permissionless: the only credential is a valid proof. The
+processor (nori-tempo-processor-rabbit) sends each bridge head proof with
+`TEMPO_PRIVATE_KEY`, pointed at `NORI_TEMPO_TOKEN_BRIDGE_ADDRESS`.
+
+Every `update` whose batch drains at least one proof request writes one
+proof queue batch (two new storage slots, 250,000 gas each on Tempo) on top
+of the transaction; updates with empty batches only advance the head. Keep
+the sender funded with its fee token (pathUSD).
+
+### Record
+
+- [ ] Submitter address and its funding source
+
+### Keep each mirror's pause in step with its ERC-20
+
+A mirror is paused and unpaused only by proof of its ERC-20's `paused()` on
+Ethereum, in two permissionless calls:
+
+1. On Ethereum, `NoriTokenBridge.syncPause(token)` copies `paused()` into the
+   bridge and requests a proof of it. The caller pays the queue fee in ETH,
+   exactly (`proofRequestQueueFee()`). Tokens without `paused()` revert with
+   `TokenNotPausable`.
+2. Once a batch covering that request is committed on Tempo,
+   `NoriTempoTokenBridge.applyPause(witness, proofQueueBatchIndex)` pauses or
+   unpauses the mirror. The caller pays the Tempo fee in its fee token. Only
+   a batch newer than the last one applied for that token is accepted
+   (`PauseNotNewer`).
+
+Run `syncPause` after every `Paused` or `Unpaused` event of a mirrored
+ERC-20:
+
+```bash
+cd ethereum
+npm run sync-pause -- <ethToken>
+```
+
+*Output on a local mainnet fork, for USDC:*
+
+```
+[SyncPause] Synced 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48: paused false, block 26156441, tx 0x8c3a704d3709ccb7981d40ad85794b7a7553b067e1f54f9a296c34136239e585
+```
+
+The pause reaches Tempo after Ethereum finality and one bridge head proof.
+The keeper in nori-worldsfair-submission-tempo (`client/`, `sync-pauses` and
+`apply-pauses`) runs both calls for every ERC-20 in its config.
+
+### Record
+
+- [ ] Who runs `syncPause` and `applyPause`, and their ETH and fee token funding
 
 ---
 
@@ -219,12 +299,14 @@ record below.
 2. **Dry-run the SAFE → Timelock → bridge path**: schedule a no-op admin call
    (e.g. set the lock fee rate to its current value) through the Timelock
    before any value flows.
-3. **First proof end-to-end**: submit one `update` carrying a real
-   nori-bridge-head proof, then one `mint` against a real deposit, on a
-   testnet before mainnet.
-4. **Archive env outputs**: `.env.nori-eth-token-bridge`,
-   `.env.nori-eth-timelock`, program id, and the §4 constants go in the
-   deployment ledger (no secrets).
+3. **Token admin**: the deployer is the TIP-20's admin; move that role to a
+   controlled key or the SAFE's Tempo counterpart.
+4. **First proof end-to-end**: submit one `update` carrying a real
+   nori-bridge-head proof, then one `mint` against a real deposit, on Moderato
+   before mainnet.
+5. **Archive env outputs**: `.env.nori-eth-token-bridge`,
+   `.env.nori-eth-timelock`, `.env.nori-tempo-token-bridge`, and the §4
+   values go in the deployment ledger (no secrets).
 
 ---
 
@@ -233,7 +315,7 @@ record below.
 | Field                          | Value |
 | ------------------------------ | ----- |
 | Network (Ethereum)             |       |
-| Cluster (Solana)               |       |
+| Network (Tempo)                |       |
 | Deploy date (UTC)              |       |
 | `OperatorSafeAddress`          |       |
 | `TimelockAddress`              |       |
@@ -243,17 +325,20 @@ record below.
 | Initial `feeRecipient`         |       |
 | Initial `lockFeeRate`          |       |
 | `noriBridgeVk`                 |       |
-| `initialVerifiedStateRoot`     |       |
 | `initialStoreHash`             |       |
-| `initialQueueCursor`           |       |
-| `Program` (program id)         |       |
-| State PDA / mint PDA           |       |
+| `Bridge`                       |       |
+| `Token`                        |       |
+| Verifier                       |       |
+| Bridge deploy block            |       |
+| `mirrorAdmin` (deployer)       |       |
+| ERC-20 mirrors (ERC-20, mirror, currency) |  |
+| `syncPause` / `applyPause` runner |    |
 | Ethereum deploy tx hashes      |       |
-| Solana initialize tx signature |       |
+| Tempo deploy tx hashes         |       |
 
 ---
 
-## Appendix A — Constructor and initialize signatures
+## Appendix A — Constructor signatures
 
 ```solidity
 // ethereum/contracts/NoriTokenBridge.sol
@@ -269,18 +354,17 @@ constructor(
     address _feeRecipient,     // = treasury or address(0)
     uint256 _proofRequestQueueFeeWei
 )
-```
 
-```rust
-// programs/token/src/state.rs
-pub struct NoriSolTokenBridgeInit {
-    pub verified_state_root: B256,
-    pub latest_helios_store_input_hash: B256,
-    pub eth_proof_queue_address: Address,
-    pub eth_token_bridge_address: Address,
-    pub latest_head: u64,
-    pub queue_cursor: u64,
-}
+// tempo/contracts/NoriTempoTokenBridge.sol
+constructor(
+    ISP1Verifier verifier_,                // = the SP1 v6.1.0 Groth16 verifier
+    bytes32 noriBridgeVk_,                 // = noriBridgeVk (§4)
+    ITIP20 token_,                         // = Token
+    bytes32 latestHeliosStoreInputHash_,   // = initialStoreHash (§4)
+    address ethTokenBridgeAddress_,        // = EthBridge (§3)
+    address ethProofQueueAddress_          // = EthQueue (§3)
+)
+// mirrorAdmin = msg.sender, the deployer: the only caller of registerMirror (§5)
 ```
 
 ## Appendix B — Open tooling gaps

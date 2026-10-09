@@ -13,9 +13,9 @@ const unprocessedRequest = {
 
 /**
  * Follows one Ethereum proof request until a committed proof queue batch on
- * Solana covers it, reading through the Ethereum provider and Solana RPC
- * connectivity machines. Nothing is a dead end: lost connections are waited
- * for and failures retry themselves.
+ * Tempo covers it, reading through the Ethereum and Tempo connectivity
+ * machines. Nothing is a dead end: lost connections are waited for and
+ * failures retry themselves.
  *
  * - `undetermined` looks the request up from the transaction that enqueued
  *   it, on entry and then every poll interval or recheck signal. A
@@ -49,7 +49,7 @@ export const ProofRequestStateGraph = define({
             requestBlockNumber: 0n as bigint,
             queueCursor: 0n as bigint,
             proofQueueBatchIndex: 0n as bigint,
-            proofQueueBatchAddress: '' as string, // base58 proof queue batch PDA
+            tempoBlockNumber: 0n as bigint, // the Tempo block whose `update` committed the batch
             root: '' as string, // 0x-prefixed batch root
             inputQueueCursor: 0n as bigint,
             outputQueueCursor: 0n as bigint,

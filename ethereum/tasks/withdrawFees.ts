@@ -1,6 +1,7 @@
 import { task } from "hardhat/config";
 import "../logger.js";
 import { Logger } from "esm-iso-logger";
+import { WEI_PER_BRIDGE_UNIT } from "../contracts/NoriTokenBridge.const.js";
 
 const logger = new Logger("WithdrawFees");
 
@@ -46,7 +47,6 @@ export const withdrawFees = task(
         signer
       );
 
-      const WEI_PER_BRIDGE_UNIT = 10n ** 12n;
 
       const feeRecipient = await tokenBridge.feeRecipient();
       const accumulatedFees = await tokenBridge.accumulatedFees();

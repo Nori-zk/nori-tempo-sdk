@@ -1,6 +1,7 @@
 import { task } from "hardhat/config";
 import "../logger.js";
 import { Logger } from "esm-iso-logger";
+import { FEE_DENOMINATOR } from "../contracts/NoriTokenBridge.const.js";
 
 const logger = new Logger("SetFeeRate");
 
@@ -58,7 +59,6 @@ export const setFeeRate = task(
         signer
       );
 
-      const FEE_DENOMINATOR = 100_000;
       const pct = ((parsedRate / FEE_DENOMINATOR) * 100).toFixed(3);
 
       const currentRate = await tokenBridge.lockFeeRate();

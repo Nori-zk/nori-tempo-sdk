@@ -1,32 +1,32 @@
-# Solana: nori-bridge-solana-sdk
+# Tempo: nori-bridge-tempo-sdk
 
-TypeScript SDK for the Nori Ethereum→Solana proof queue. An Ethereum contract enqueues a storage-proof request on [NoriProofRequestQueue.sol](../ethereum/contracts/NoriProofRequestQueue.sol); Nori's bridge infrastructure proves it and commits the batch that settled it on Solana. This SDK follows a request from the transaction that enqueued it until its batch is committed, builds the request's Merkle witness against that batch root, shows a submitting address's requests as a paged history or a live view, and follows Nori's prover pipeline as it works.
+TypeScript SDK for the Nori Ethereum→Tempo proof queue. An Ethereum contract enqueues a storage-proof request on [NoriProofRequestQueue.sol](../ethereum/contracts/NoriProofRequestQueue.sol); Nori's bridge infrastructure proves it and commits the batch that settled it on Tempo, in [NoriTempoTokenBridge.sol](../tempo/contracts/NoriTempoTokenBridge.sol). This SDK follows a request from the transaction that enqueued it until its batch is committed, builds the request's Merkle witness against that batch root, shows a submitting address's requests as a paged history or a live view, and follows Nori's prover pipeline as it works.
 
 
 ## Install
 
 ```sh
-npm install @nori-zk/nori-bridge-solana-sdk @solana/kit
+npm install @nori-zk/nori-bridge-tempo-sdk
 ```
 
-`@solana/kit` is a peer dependency. The witness hashing comes from `@nori-zk/ethereum-solana-proof-queue-utils-glam`, the SP1 guest's own hashing compiled to WebAssembly, installed as a dependency.
+The witness hashing comes from `@nori-zk/ethereum-tempo-proof-queue-utils-glam`, the SP1 guest's own hashing compiled to WebAssembly, installed as a dependency.
 
 The package has three entry points:
 
-- `@nori-zk/nori-bridge-solana-sdk`: everything below;
-- `@nori-zk/nori-bridge-solana-sdk/utils`: `stateOf$`, `dataOnEntry$`, `atNode`, `AsNodeData` and `StartedMachine`, for an app's own YState machines;
-- `@nori-zk/nori-bridge-solana-sdk/program`: the Solana program's generated client.
+- `@nori-zk/nori-bridge-tempo-sdk`: everything below;
+- `@nori-zk/nori-bridge-tempo-sdk/utils`: `stateOf$`, `dataOnEntry$`, `atNode`, `AsNodeData` and `StartedMachine`, for an app's own YState machines;
+- `@nori-zk/nori-bridge-tempo-sdk/program`: the Tempo contracts' ethers types, factories and ABIs (`NoriTempoTokenBridge__factory` and the rest of `@nori-zk/tempo-token-bridge`).
 
 ## How a proof request gets proven
 
-A request enqueued on Ethereum waits for Ethereum to finalize its block. Nori's bridge head then takes the requests enqueued since the last batch as one job, proves Ethereum's state with SP1, and its Solana processor submits the proof to the Nori program on Solana in an `update`, which commits the batch: the queue cursor moves past the requests, and, when the job had any, a proof queue batch account records their Merkle root. Nori publishes each step as it happens, and the SDK follows them with this machine:
+A request enqueued on Ethereum waits for Ethereum to finalize its block. Nori's bridge head then takes the requests enqueued since the last batch as one job, proves Ethereum's state with SP1, and its Tempo processor submits the proof to the bridge contract on Tempo in an `update`, which commits the batch: the queue cursor moves past the requests, and, when the job had any, the contract records their Merkle root as the next proof queue batch. Nori publishes each step as it happens, and the SDK follows them with this machine:
 
 ![Nori bridge infra transition graph](src/rpc/nori/NoriBridgeInfraTransitionGraph.svg)
 
 - `BridgeHeadJobCreated`: the bridge head has taken the next requests as a job.
 - `BridgeHeadJobSucceeded`: their proof is done; its data lists the requests it covers (`verified_requests`). A failed job (`BridgeHeadJobFailed`) is staged again.
-- `EthProcessorTransactionSubmitting`, then `…SubmitSucceeded` (with the Solana transaction) or `…SubmitFailed`.
-- `…FinalizationSucceeded` or `…FinalizationFailed`: whether the `update` was finalized on Solana. After a failure the bridge head checks the program: still aligned, it stages the job again; moved on, it advances.
+- `EthProcessorTransactionSubmitting`, then `…SubmitSucceeded` (with the Tempo transaction) or `…SubmitFailed`.
+- `…FinalizationSucceeded` or `…FinalizationFailed`: whether the `update` landed on Tempo, where a mined transaction is final. After a failure the bridge head checks the contract: still aligned, it stages the job again; moved on, it advances.
 - `BridgeHeadAdvanced`: the batch is committed; the next job follows.
 - `BridgeHeadStarted` and `EthProcessorStarted`: a restart, which resumes from its checkpoint.
 - `joining`: connected, before the first step arrives. It carries Nori's latest summary of the stage, and every reconnect comes back here, since steps sent while disconnected are lost.
@@ -34,7 +34,7 @@ A request enqueued on Ethereum waits for Ethereum to finalize its block. Nori's 
 Each state carries that step's data exactly as Nori sent it. Nori reports these states itself, so this machine is not driven by the SDK; `startNoriBridgeInfraTransitions(nori)` returns its states as they arrive:
 
 ```ts
-import { startNoriBridgeInfraTransitions } from '@nori-zk/nori-bridge-solana-sdk';
+import { startNoriBridgeInfraTransitions } from '@nori-zk/nori-bridge-tempo-sdk';
 
 const { noriBridgeInfraTransitions, finalityTransitions$, warnings$ } =
     startNoriBridgeInfraTransitions(nori);
@@ -64,9 +64,9 @@ A running machine has:
 The app names the transports it has, once, and `createConnections` opens them, each with its own machine:
 
 ```ts
-import { createConnections } from '@nori-zk/nori-bridge-solana-sdk';
+import { createConnections } from '@nori-zk/nori-bridge-tempo-sdk';
 
-const { network, ethereum, solana, nori, close } = createConnections({
+const { network, ethereum, tempo, nori, close } = createConnections({
     ethereum: {
         expectedChainId: 11155111n,
         http: { rpcUrl: 'https://…' }, // optional
@@ -78,12 +78,13 @@ const { network, ethereum, solana, nori, close } = createConnections({
             subscriptions: ['websocket', 'wallet'],
         },
     },
-    solana: {
-        cluster: 'devnet', // or { expectedGenesisHash, http: { rpcUrls } } for any other cluster
-        http: { rpcUrls: ['https://…'] }, // optional: default, the cluster's public URL
+    tempo: {
+        network: 'moderato', // or 'mainnet'; or { expectedChainId, http: { rpcUrl } } for any other Tempo chain
+        http: { rpcUrl: 'https://…' }, // optional: default, the network's public URL
         websocket: { url: 'wss://…' }, // optional: default, the http URL over wss
+        wallet: true, // optional: only for the app's own Tempo transactions
     },
-    nori: { websocket: { url: 'wss://…' } }, // optional: default, wss://wss.solana.nori.it.com
+    nori: { websocket: { url: 'wss://…' } }, // optional: default, wss://wss.tempo.nori.it.com
     healthChecks: { intervalMs: 15_000, timeoutMs: 10_000 }, // optional, for every transport
     retries: { initialDelayMs: 1_000, maxDelayMs: 30_000 }, // optional, for every transport
 });
@@ -96,20 +97,21 @@ What comes back has one object per transport:
 | `ethereum.http`      | `connection`, `ready(): Promise<EthereumProvider>`, `close()`                                 |
 | `ethereum.websocket` | `connection`, `socket`, `ready(): Promise<EthereumProvider>`, `close()`                       |
 | `ethereum.wallet`    | `connection`, `ready(): Promise<BrowserProvider>`, `chooseWallet(uuid)`, `switchToExpectedChain()`, `close()` |
-| `solana.http`        | `connection`, `ready(): Promise<SolanaRpc>`, `close()`                                        |
-| `solana.websocket`   | `connection`, `socket`, `close()`                                                            |
+| `tempo.http`         | `connection`, `ready(): Promise<EthereumProvider>`, `close()`                                 |
+| `tempo.websocket`    | `connection`, `socket`, `ready(): Promise<EthereumProvider>`, `close()`                       |
+| `tempo.wallet`       | as `ethereum.wallet`, on the Tempo chain                                                      |
 | `nori.websocket`     | `connection`, `socket`, `close()`                                                            |
 
-`connection` is the transport's running machine (`undefined` for an Ethereum transport the app left out). `ready()` resolves with the client to use when the transport is ready, and otherwise rejects at once with `ConnectionNotReadyError`, whose `notReady` lists each transport and the state it is in. On an Ethereum transport the app left out, `ready()` rejects with `NoWalletConfiguredError`, `NoEthereumHttpConfiguredError` or `NoEthereumWebsocketConfiguredError` instead: a setup mistake, not a state to wait out. `close()` on the top level closes everything.
+`connection` is the transport's running machine (`undefined` for a transport the app left out). `ready()` resolves with the client to use when the transport is ready, and otherwise rejects at once with `ConnectionNotReadyError`, whose `notReady` lists each transport and the state it is in. On a transport the app left out, `ready()` rejects with `NoWalletConfiguredError`, `NoEthereumHttpConfiguredError` or `NoEthereumWebsocketConfiguredError` instead: a setup mistake, not a state to wait out. `close()` on the top level closes everything.
 
 ### Which transport serves what
 
-Calls, log queries and subscriptions can each go over more than one Ethereum transport, in the order the app gives in `order`; the SDK sets none. When only one configured transport can serve a kind of request, that one is used; when several can and no order is given, `createConnections` throws. Signing only ever goes through the wallet: `(await ethereum.wallet.ready()).getSigner()`. On Solana each kind of request has one transport: calls over http, subscriptions over the websocket.
+Calls, log queries and subscriptions can each go over more than one Ethereum transport, in the order the app gives in `order`; the SDK sets none. When only one configured transport can serve a kind of request, that one is used; when several can and no order is given, `createConnections` throws. Signing only ever goes through the wallet: `(await ethereum.wallet.ready()).getSigner()`. Tempo is the same kind of chain object over Tempo's transports. By default each kind of request has one transport there: calls and logs over http, subscriptions over the websocket; `tempo.order` changes that. Its wallet serves only the app's own Tempo transactions, since a browser wallet is on one chain at a time and the app signs its Ethereum transactions through it.
 
-Every function below takes the chain object (`ethereum`, `solana`, `nori`) and picks the transport itself. An app's own Ethereum requests go the same way, through `forCalls`, `forLogs` and `forSubscriptions`. `forCalls` and `forLogs` are given a function whose first argument is the provider, and that function's other arguments, and run it on the right transport.
+Every function below takes the chain object (`ethereum`, `tempo`, `nori`) and picks the transport itself. An app's own Ethereum and Tempo requests go the same way, through `forCalls`, `forLogs` and `forSubscriptions`. `forCalls` and `forLogs` are given a function whose first argument is the provider, and that function's other arguments, and run it on the right transport.
 
 ```ts
-import { forCalls, type EthereumProvider } from '@nori-zk/nori-bridge-solana-sdk';
+import { forCalls, type EthereumProvider } from '@nori-zk/nori-bridge-tempo-sdk';
 
 async function fetchTokenSymbol(provider: EthereumProvider, token: string): Promise<string> {
     return new Contract(token, ['function symbol() view returns (string)'], provider).symbol();
@@ -132,13 +134,13 @@ Whether the device can reach the internet, in a browser or in Node. It checks fo
 
 ![HTTP connection graph](src/rpc/connection/HttpConnectionGraph.svg)
 
-Ethereum's and Solana's http transports. `ready` means a health check passed on the expected network: for Ethereum `eth_chainId` then `eth_blockNumber` (`data.health.blockNumber`), for Solana `getGenesisHash` (the cluster) then `getSlot` (`data.health.slot`). While ready it checks again in the background. `unreachable` and `wrongNetwork` (the endpoint serves another chain or cluster; `data.found` and `data.expected` say which) check again after a wait that doubles each time, so an endpoint that comes back, or is fixed, recovers by itself. With several Solana endpoints each failed check moves on to the next, so one that is down or rate-limited is skipped; `data.url` says which endpoint each state is about. A request that fails to reach the node makes it check at once.
+Ethereum's and Tempo's http transports. `ready` means a health check passed on the expected network: `eth_chainId` then `eth_blockNumber` (`data.health.blockNumber`). While ready it checks again in the background. `unreachable` and `wrongNetwork` (the endpoint serves another chain; `data.found` and `data.expected` say which) check again after a wait that doubles each time, so an endpoint that comes back, or is fixed, recovers by itself. `data.url` says which endpoint each state is about. A request that fails to reach the node makes it check at once.
 
 ### WebSocket
 
 ![WebSocket connection graph](src/rpc/connection/WebSocketConnectionGraph.svg)
 
-Ethereum's, Solana's and Nori's websockets. `open` means the socket is connected; a socket that closes, errors or stops answering its heartbeat (Nori's ping and pong) drops to `reconnecting`, which connects again after a wait that doubles each time. A subscription is sent again every time the socket opens. `gaveUp` is reached only when `retries.maxAttempts` is set and runs out; the socket's `retry()` starts again. Messages sent while connecting are queued until the socket opens.
+Ethereum's, Tempo's and Nori's websockets. `open` means the socket is connected; a socket that closes, errors or stops answering its heartbeat (Nori's ping and pong) drops to `reconnecting`, which connects again after a wait that doubles each time. A subscription is sent again every time the socket opens. `gaveUp` is reached only when `retries.maxAttempts` is set and runs out; the socket's `retry()` starts again. Messages sent while connecting are queued until the socket opens.
 
 ### Ethereum wallet
 
@@ -173,16 +175,16 @@ ethereum.wallet.connection?.state$.subscribe(({ node }) => {
 
 Every subscription has a `$` name and stays live: pushed while a transport that can subscribe is ready, and polled while none is, in the same shape. A one-off read has the same name without the `$`.
 
-| Ethereum                            | Solana                                              | Nori                                     |
-| ----------------------------------- | --------------------------------------------------- | ---------------------------------------- |
-| `getNewHeads$(ethereum)`            | `getAccount$(solana, address, commitment?)`         | `getNoriBridgeInfraState$(nori)`         |
-| `getEthereumLogs$(ethereum, filter)` | `getSolanaLogs$(solana, address, commitment?)`      | `getNoriBridgeInfraTimings$(nori)`       |
-|                                     | `getSignatureStatus$(solana, signature, commitment?)` | `getNoriBridgeInfraEthState$(nori)`      |
-|                                     |                                                     | `getNoriBridgeInfraTransitionNotices$(nori)` |
-|                                     |                                                     | `getNoriBridgeInfraSystemNotices$(nori)` |
-|                                     |                                                     | `getNoriBridgeInfraStateWithTimings$(nori)` |
+| Ethereum                            | Tempo                                                 | Nori                                     |
+| ----------------------------------- | ----------------------------------------------------- | ---------------------------------------- |
+| `getNewHeads$(ethereum)`            | `getBridgeState$(tempo, bridgeAddress)`               | `getNoriBridgeInfraState$(nori)`         |
+| `getEthereumLogs$(ethereum, filter)` | `getTempoLogs$(tempo, filter)`                        | `getNoriBridgeInfraTimings$(nori)`       |
+|                                     | `getProofQueueBatchCommitted$(tempo, bridgeAddress)`  | `getNoriBridgeInfraEthState$(nori)`      |
+|                                     | `getTransactionReceipt$(tempo, transactionHash)`      | `getNoriBridgeInfraTransitionNotices$(nori)` |
+|                                     | `getNewHeads$(tempo)`                                 | `getNoriBridgeInfraSystemNotices$(nori)` |
+|                                     |                                                       | `getNoriBridgeInfraStateWithTimings$(nori)` |
 
-Ethereum's subscriptions go in the `subscriptions` order: the websocket, or the wallet's own `eth_subscribe` where the wallet supports it. Solana's go over its websocket. Nori's only exist on its websocket, so they have no polling and no one-off reads; its state, timings and Ethereum state replay the latest to each new subscriber. `getAccount$` replays the latest too.
+Ethereum's subscriptions go in the `subscriptions` order: the websocket, or the wallet's own `eth_subscribe` where the wallet supports it. Tempo's go the same way, over its websocket by default. `getBridgeState$` reads the bridge's `state()` at once and again each time an `update` is applied (`UpdateApplied`), replaying the latest; `getProofQueueBatchCommitted$` decodes each `ProofQueueBatchCommitted`; `getTransactionReceipt$` emits once, when the transaction is mined, which on Tempo is final. Nori's only exist on its websocket, so they have no polling and no one-off reads; its state, timings and Ethereum state replay the latest to each new subscriber.
 
 ## Following one proof request
 
@@ -193,10 +195,10 @@ Ethereum's subscriptions go in the `subscriptions` order: the websocket, or the 
 - `undetermined` looks the request up on Ethereum. A transaction that is not mined yet is waited for.
 - `unprocessed` means the bridge has not proven it yet; the machine checks the bridge every poll interval (15 s by default) and on every recheck signal, such as the bridge infra state moving on.
 - `proofAvailable` means a committed proof queue batch covers it. Batches are append-only, so it stays there.
-- `waitingForConnection…` waits for Ethereum and Solana, naming them in `data.waitingOn`, and resumes where it was.
+- `waitingForConnection…` waits for Ethereum and Tempo, naming them in `data.waitingOn`, and resumes where it was.
 - `failed…` holds the error in `data.error` and reads again by itself after a wait that doubles with each failure in a row (`data.failedReads`); `retry()` reads again at once.
 
-Once the request is `proofAvailable`, `getProofRequestWitness` fetches every request in its batch from Ethereum, rebuilds the batch's Merkle tree, and returns the request's leaf, its bottom-up path and the root, checked against the root committed on Solana (a mismatch throws `ProofRequestWitnessRootMismatchError`):
+Once the request is `proofAvailable`, `getProofRequestWitness` fetches every request in its batch from Ethereum, rebuilds the batch's Merkle tree, and returns the request's leaf, its bottom-up path and the root, checked against the root committed on Tempo (a mismatch throws `ProofRequestWitnessRootMismatchError`). The `proofAvailable` data also carries `proofQueueBatchIndex` and `tempoBlockNumber`, the Tempo block whose `update` committed the batch:
 
 ```ts
 import { filter } from 'rxjs';
@@ -206,18 +208,19 @@ import {
     getNoriBridgeInfraState$,
     getProofRequestWitness,
     type ProofRequestStateNodeUnion,
-} from '@nori-zk/nori-bridge-solana-sdk';
+} from '@nori-zk/nori-bridge-tempo-sdk';
 
-const { ethereum, solana, nori } = createConnections({
+const { ethereum, tempo, nori } = createConnections({
     ethereum: { expectedChainId: 11155111n, wallet: true },
-    solana: { cluster: 'devnet' },
+    tempo: { network: 'moderato' },
 });
 const proofQueueAddress = '0x…'; // the NoriProofRequestQueue address
+const bridgeAddress = '0x…'; // the NoriTempoTokenBridge address
 const proofRequestTxHash = '0x…'; // the transaction that enqueued the request
 
 const { proofRequestState } = createProofRequestStateMachine(
-    { ethereum, solana },
-    { proofQueueAddress, proofRequestTxHash },
+    { ethereum, tempo },
+    { proofQueueAddress, bridgeAddress, proofRequestTxHash },
     undefined,
     15_000,
     getNoriBridgeInfraState$(nori) // check again whenever the bridge moves on
@@ -241,13 +244,13 @@ To resume a request whose state the app already knows, pass that snapshot as the
 
 ![Unprocessed proof request state graph](src/proofRequest/UnprocessedProofRequestStateGraph.svg)
 
-Nori's bridge infra state says what an unprocessed request is waiting on: Ethereum finality for its block, the job ahead of it, then the job that includes it. `createUnprocessedProofRequestStateMachine(blockNumber, nori)` follows these from the request's block number and Nori's state, timings and Ethereum state. Every new `state.eth`, `state.bridge` or timings message recomputes where the request waits and how long it has left, and the estimate counts down each second in between. Each state's data carries `time_remaining_sec` for the step it is in, `commit_time_remaining_sec` until the batch covering the request is committed on Solana (negative once that is taking longer than expected), and `waiting_elapsed_sec` for how long it has been in that state, which together draw a progress bar.
+Nori's bridge infra state says what an unprocessed request is waiting on: Ethereum finality for its block, the job ahead of it, then the job that includes it. `createUnprocessedProofRequestStateMachine(blockNumber, nori)` follows these from the request's block number and Nori's state, timings and Ethereum state. Every new `state.eth`, `state.bridge` or timings message recomputes where the request waits and how long it has left, and the estimate counts down each second in between. Each state's data carries `time_remaining_sec` for the step it is in, `commit_time_remaining_sec` until the batch covering the request is committed on Tempo (negative once that is taking longer than expected), and `waiting_elapsed_sec` for how long it has been in that state, which together draw a progress bar.
 
-Nori creates a job on each Ethereum finality transition, one epoch (`ETHEREUM_EPOCH_SEC`, 384 s) after the last, proving the epoch's blocks, and commits it on Solana when it finishes; a job takes at most `MAX_BATCH_SIZE` (2¹⁶) requests. A job goes through the stages in `NORI_JOB_STAGES`: proving it (`BridgeHeadJobCreated`, `BridgeHeadJobSucceeded`), then submitting it to Solana (`EthProcessorTransactionSubmitting`, `EthProcessorTransactionSubmitSucceeded`); it is committed when it reaches `EthProcessorTransactionFinalizationSucceeded`. `getCommitTimes(stage, timings)` gives, from where Nori is in its loop, the seconds until the job it is running is committed and until the next job is committed. `jobTimingsOf(timings)` gives the seconds each job stage takes: Nori's timings where it reports them, and `FALLBACK_NORI_JOB_TIMINGS` (a proof about two minutes, submitting and finalization seconds) otherwise. `getFinalityTimeRemainingSec(blockNumber, finality)` gives the seconds until a block is finalized.
+Nori creates a job on each Ethereum finality transition, one epoch (`ETHEREUM_EPOCH_SEC`, 384 s) after the last, proving the epoch's blocks, and commits it on Tempo when it finishes; a job takes at most `MAX_BATCH_SIZE` (2¹⁶) requests. A job goes through the stages in `NORI_JOB_STAGES`: proving it (`BridgeHeadJobCreated`, `BridgeHeadJobSucceeded`), then submitting it to Tempo (`EthProcessorTransactionSubmitting`, `EthProcessorTransactionSubmitSucceeded`); it is committed when it reaches `EthProcessorTransactionFinalizationSucceeded`. `getCommitTimes(stage, timings)` gives, from where Nori is in its loop, the seconds until the job it is running is committed and until the next job is committed. `jobTimingsOf(timings)` gives the seconds each job stage takes: Nori's timings where it reports them, and `FALLBACK_NORI_JOB_TIMINGS` (a proof about two minutes, submitting to Tempo about a second) otherwise. `getFinalityTimeRemainingSec(blockNumber, finality)` gives the seconds until a block is finalized.
 
 ## Where the waiting requests are
 
-`sortWaitingProofRequests(waiting, finalizedBlock, job?)` sorts the requests no batch covers yet into three sets, each oldest first: those whose block is not finalized yet, those finalized and scheduled for a later job, and those in the job Nori is running now. The first two come from Ethereum and Solana alone. Telling the job Nori is running apart from the later ones needs Nori's `state.bridge`; without it, every finalized request is scheduled.
+`sortWaitingProofRequests(waiting, finalizedBlock, job?)` sorts the requests no batch covers yet into three sets, each oldest first: those whose block is not finalized yet, those finalized and scheduled for a later job, and those in the job Nori is running now. The first two come from Ethereum and Tempo alone. Telling the job Nori is running apart from the later ones needs Nori's `state.bridge`; without it, every finalized request is scheduled.
 
 ```ts
 import {
@@ -256,9 +259,9 @@ import {
     getFinalizedBlockNumber,
     getLatestBlockHeight,
     sortWaitingProofRequests,
-} from '@nori-zk/nori-bridge-solana-sdk';
+} from '@nori-zk/nori-bridge-tempo-sdk';
 
-const { queueCursor } = await getBridgeState(solana);
+const { queueCursor } = await getBridgeState(tempo, bridgeAddress);
 const waiting = await getEnqueuedProofRequests(ethereum, proofQueueAddress, {
     fromBlock: queueDeploymentBlock,
     toBlock: await getLatestBlockHeight(ethereum),
@@ -280,19 +283,20 @@ The submitting address is the contract that enqueued the requests: the queue rec
 ![Proof request history graph](src/proofRequest/ProofRequestHistoryGraph.svg)
 
 ```ts
-import { createConnections, createProofRequestHistoryMachine } from '@nori-zk/nori-bridge-solana-sdk';
+import { createConnections, createProofRequestHistoryMachine } from '@nori-zk/nori-bridge-tempo-sdk';
 
-const { ethereum, solana } = createConnections({
+const { ethereum, tempo } = createConnections({
     ethereum: { expectedChainId: 11155111n, http: { rpcUrl: 'https://…' } },
-    solana: { cluster: 'devnet' },
+    tempo: { network: 'moderato' },
 });
 const proofQueueAddress = '0x…'; // the NoriProofRequestQueue address
+const bridgeAddress = '0x…'; // the NoriTempoTokenBridge address
 const submittingAddress = '0x…'; // the contract that enqueued the requests
 const queueDeploymentBlock = 0; // the block the queue was deployed in
 
 const { proofRequestHistory, loadMore } = createProofRequestHistoryMachine(
-    { ethereum, solana },
-    { proofQueueAddress },
+    { ethereum, tempo },
+    { proofQueueAddress, bridgeAddress },
     { target: submittingAddress, fromBlock: queueDeploymentBlock, order: 'desc', pageSize: 20 }
 );
 
@@ -310,16 +314,16 @@ import {
     createConnections,
     createLatestProofRequestsMachine,
     getNoriBridgeInfraState$,
-} from '@nori-zk/nori-bridge-solana-sdk';
+} from '@nori-zk/nori-bridge-tempo-sdk';
 
-const { ethereum, solana, nori } = createConnections({
+const { ethereum, tempo, nori } = createConnections({
     ethereum: { expectedChainId: 11155111n, http: { rpcUrl: 'https://…' } },
-    solana: { cluster: 'devnet' },
+    tempo: { network: 'moderato' },
 });
 
 const { latestProofRequests } = createLatestProofRequestsMachine(
-    { ethereum, solana },
-    { proofQueueAddress },
+    { ethereum, tempo },
+    { proofQueueAddress, bridgeAddress },
     { target: submittingAddress, fromBlock: queueDeploymentBlock, count: 10 },
     15_000, // refresh interval
     getNoriBridgeInfraState$(nori) // and refresh whenever the bridge moves on
@@ -330,7 +334,7 @@ It shows the newest `count` requests in `data.view` and keeps them current: new 
 
 ### Gating
 
-`bothReady$({ ethereum, solana })` emits once Ethereum (any transport in its calls order) and Solana's http can both serve a read, and `waitingOnChanged$` each time the set of chains that cannot changes; the reading machines use them, and an app can too.
+`bothReady$({ ethereum, tempo })` emits once Ethereum and Tempo (any transport in each one's calls order) can both serve a read, and `waitingOnChanged$` each time the set of chains that cannot changes; the reading machines use them, and an app can too.
 
 ## One-off reads
 
@@ -338,27 +342,71 @@ Without a machine, each read runs once through the chain objects and throws on f
 
 | Proof requests                                                          | Proof queue                                                        | Ethereum                             |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------ |
-| `getProofRequestStateSnapshot({ ethereum, solana }, request)`           | `getProofQueueHead(ethereum, proofQueueAddress)`                   | `getLatestBlockHeight(ethereum)`     |
+| `getProofRequestStateSnapshot({ ethereum, tempo }, request)`            | `getProofQueueHead(ethereum, proofQueueAddress)`                   | `getLatestBlockHeight(ethereum)`     |
 | `getProofRequestWitness(ethereum, proofAvailable, proofQueueAddress)`    | `getEnqueuedProofRequests(ethereum, proofQueueAddress, query)`     | `getFinalizedBlockNumber(ethereum)`  |
-| `getProofRequestHistoryPage({ ethereum, solana }, addresses, query)`     | `getProofRequestBatch(ethereum, proofQueueAddress, …)`             |                                      |
-| `getProofRequestCountsByTarget({ ethereum, solana }, addresses, query)`  | `getBridgeState(solana)`                                           |                                      |
-| `getProofRequestsByTarget(ethereum, proofQueueAddress, query)`           | `getProofQueueBatches(solana, indices)`                            |                                      |
-| `getRequestIdByTxHash(ethereum, proofQueueAddress, txHash)`              | `getProofQueueBatchSummaries(solana, indices)`                     |                                      |
-| `getProofRequestAge(ethereum, blockNumber)`                              | `getProofQueueBatch(solana, requestId, batchCount)`                |                                      |
-|                                                                         | `getProofQueueBatchesForRequests(solana, requestIds, batchCount)`  |                                      |
-|                                                                         | `findProofQueueBatchPda(index)`: an address, no read               |                                      |
+| `getProofRequestHistoryPage({ ethereum, tempo }, addresses, query)`      | `getProofRequestBatch(ethereum, proofQueueAddress, …)`             |                                      |
+| `getProofRequestCountsByTarget({ ethereum, tempo }, addresses, query)`   | `getBridgeState(tempo, bridgeAddress)`                             |                                      |
+| `getProofRequestsByTarget(ethereum, proofQueueAddress, query)`           | `getProofQueueBatches(tempo, indices, bridgeAddress)`              |                                      |
+| `getRequestIdByTxHash(ethereum, proofQueueAddress, txHash)`              | `getProofQueueBatchSummaries(tempo, indices, bridgeAddress)`       |                                      |
+| `getProofRequestAge(ethereum, blockNumber)`                              | `getProofQueueBatch(tempo, requestId, bridgeAddress)`              |                                      |
+|                                                                         | `getProofQueueBatchesForRequests(tempo, requestIds, bridgeAddress)` |                                      |
+
+The batch reads are the bridge contract's views: `proofQueueBatches(fromIndex, count)` reads consecutive batches in one call, and `findProofQueueBatch(requestId)` finds the batch covering a request with a binary search in the contract, one call per request.
 
 ```ts
 import { firstValueFrom } from 'rxjs';
-import { bothReady$, getProofRequestCountsByTarget } from '@nori-zk/nori-bridge-solana-sdk';
+import { bothReady$, getProofRequestCountsByTarget } from '@nori-zk/nori-bridge-tempo-sdk';
 
-await firstValueFrom(bothReady$({ ethereum, solana }));
+await firstValueFrom(bothReady$({ ethereum, tempo }));
 const { total, proofAvailable, unprocessed } = await getProofRequestCountsByTarget(
-    { ethereum, solana },
-    { proofQueueAddress },
+    { ethereum, tempo },
+    { proofQueueAddress, bridgeAddress },
     { target: submittingAddress, fromBlock: queueDeploymentBlock }
 );
 ```
+
+## Minting and pausing on Tempo
+
+The token bridge is built on the queue: a deposit locked in `NoriTokenBridge` on Ethereum, ETH (`lockTokens`) or an ERC-20 (`lockERC20`), is a proof request whose leaf commits to `sha256` of the Tempo recipient's address, and `syncPause` makes an ERC-20's pause state one too. Once the request's batch is committed, `getVerifiedRequestWitness` gives its witness in the shape the Tempo bridge takes, and the recipient mints with it: `mint` for nETH, `mintERC20` for the ERC-20's TIP-20 mirror. Anyone applies a proven pause state to the mirror with `applyPause`. Each sends one Tempo transaction with the signer it is given, such as the app's Tempo wallet, and returns its receipt, which on Tempo is final; the signer pays the fee in its fee token.
+
+```ts
+import {
+    createConnections,
+    getProofRequestStateSnapshot,
+    getTokenBalance,
+    getVerifiedRequestWitness,
+    mint,
+    ProofRequestState,
+} from '@nori-zk/nori-bridge-tempo-sdk';
+
+const { ethereum, tempo } = createConnections({
+    ethereum: { expectedChainId: 11155111n, http: { rpcUrl: 'https://…' } },
+    tempo: { network: 'moderato', wallet: true },
+});
+const lockTxHash = '0x…'; // the NoriTokenBridge.lockTokens transaction
+
+const request = await getProofRequestStateSnapshot(
+    { ethereum, tempo },
+    { proofQueueAddress, bridgeAddress, proofRequestTxHash: lockTxHash }
+);
+if (request.state === ProofRequestState.ProofAvailable) {
+    const witness = await getVerifiedRequestWitness(ethereum, request, proofQueueAddress);
+    const signer = await (await tempo.wallet.ready()).getSigner(); // the recipient
+    await mint(signer, bridgeAddress, witness, request.proofQueueBatchIndex);
+    console.log(await getTokenBalance(tempo, nETHAddress, await signer.getAddress()));
+}
+```
+
+| Reads (Tempo) | Transactions (Tempo) |
+| --- | --- |
+| `getMintedSoFar(tempo, bridgeAddress, recipient)`: nETH minted so far | `mint(signer, bridgeAddress, depositWitness, proofQueueBatchIndex)` |
+| `getErc20MintedSoFar(tempo, bridgeAddress, ethToken, recipient)`: a mirror minted so far | `mintERC20(signer, bridgeAddress, depositWitness, proofQueueBatchIndex)` |
+| `getMirror(tempo, bridgeAddress, ethToken)`: an ERC-20's TIP-20 mirror, `undefined` until registered | `applyPause(signer, bridgeAddress, pauseWitness, proofQueueBatchIndex)` |
+| `getLastPauseApplied(tempo, bridgeAddress, ethToken)`: the batch whose pause state the mirror last followed | |
+| `getTokenBalance(tempo, token, account)`: a TIP-20 balance (nETH, a mirror, a fee token) | |
+| `getFeeToken(tempo, account)`: the fee token the account chose, `undefined` when none | |
+
+Minting is delta-based: a deposit's leaf carries what was locked so far, and the bridge mints what was not yet minted; minting again with nothing new locked reverts with `ZeroMintAmount`. `applyPause` accepts only a batch newer than `getLastPauseApplied`. A transaction that reverts after it was sent throws `TempoTransactionRevertedError`; one the contract refuses beforehand throws the contract's error from ethers' gas estimate.
 
 ## Development
 
@@ -369,13 +417,16 @@ npm run reinstall
 npm run build
 ```
 
-`npm run build` builds the Solana program, regenerates `idl/` with `anchor idl build`, and builds the `ethereum/` and `sdk/` workspaces. This package's `prebuild` regenerates `src/program/` from `idl/token.json` with Codama ([scripts/generate-client.mjs](scripts/generate-client.mjs)), so the typed client follows the program with every build.
+`npm run build` builds every workspace: `ethereum/`, `tempo-zk-utils/`, `tempo/` (its Hardhat compile generates the contracts' ethers types this package's `program` entry serves) and `sdk/`.
 
 Tests, from this folder:
 
 ```sh
 npm run test:unit
+npm run test:integration
 ```
+
+`test:integration` mints and pauses through the sdk on two local nodes it starts itself: an anvil fork of Ethereum mainnet (`ETH_MAINNET_FORK_RPC_URL`, default a public RPC) with the real queue, token bridge and USDC, and `anvil --network tempo` with the real Tempo bridge; each proof queue batch is planted in the bridge's storage as `update` writes it. It needs `anvil` (Foundry) on PATH and network access.
 
 The state machine graphs' images are generated from their definitions with [ystate-visualizer](https://github.com/yaw-rx/ystate), next to each definition:
 

@@ -1,19 +1,16 @@
 [package]
 name = "nori-cli"
-version = "0.1.0"
-description = "Operator CLI for a deployed Nori Solana token bridge program"
+version = "0.0.1"
+description = "Operator CLI for the Nori Tempo token bridge"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 [dependencies]
 proof-submitter = { workspace = true }
-token = { workspace = true }
 nori-elf = { workspace = true }
-alloy-primitives = { workspace = true }
-anchor-lang = { workspace = true }
+alloy = { workspace = true, features = ["providers", "reqwest"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = { workspace = true }
-solana-rpc-client = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

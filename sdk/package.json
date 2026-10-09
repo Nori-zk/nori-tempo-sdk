@@ -1,18 +1,18 @@
 {
-    "name": "@nori-zk/nori-bridge-solana-sdk",
-    "version": "0.1.1",
-    "description": "Nori bridge Solana SDK: track Ethereum proof requests through the bridge to Solana and build their witnesses",
+    "name": "@nori-zk/nori-bridge-tempo-sdk",
+    "version": "0.0.1",
+    "description": "Nori bridge Tempo SDK: track Ethereum proof requests through the bridge to Tempo and build their witnesses",
     "author": "",
     "license": "Apache-2.0",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/Nori-zk/nori-solana-sdk.git",
+        "url": "git+https://github.com/Nori-zk/nori-tempo-sdk.git",
         "directory": "sdk"
     },
     "keywords": [
         "nori",
         "bridge",
-        "solana",
+        "tempo",
         "proof-queue"
     ],
     "publishConfig": {
@@ -35,7 +35,6 @@
     },
     "scripts": {
         "clean": "rimraf build",
-        "prebuild": "npm run generate:client",
         "build": "npm run clean && tsc",
         "buildw": "tsc --watch",
         "coverage": "node --experimental-vm-modules ../node_modules/jest/bin/jest.js --coverage --runInBand",
@@ -48,18 +47,14 @@
         "test-ci": "npm run test:unit",
         "testw": "node --experimental-vm-modules ../node_modules/jest/bin/jest.js --watch --runInBand",
         "lint": "npx eslint src",
-        "lint:fix": "npx eslint src --fix",
-        "generate:client": "node scripts/generate-client.mjs"
+        "lint:fix": "npx eslint src --fix"
     },
     "devDependencies": {
         "@babel/preset-env": "^7.29.0",
         "@babel/preset-typescript": "^7.28.5",
-        "@codama/nodes-from-anchor": "^1.5.6",
-        "@codama/renderers-js": "^2.5.0",
         "@types/jest": "^30.0.0",
         "@typescript-eslint/eslint-plugin": "^8.55.0",
         "@typescript-eslint/parser": "^8.55.0",
-        "codama": "^1.11.0",
         "eslint": "^9.39.2",
         "jest": "^30.2.0",
         "npm-workspaces-publish-tool": "0.0.18",
@@ -74,16 +69,13 @@
         "node": ">=20.0.0"
     },
     "dependencies": {
-        "@nori-zk/ethereum-solana-bridge": "*",
-        "@nori-zk/ethereum-solana-proof-queue-utils-glam": "0.0.1",
+        "@nori-zk/ethereum-tempo-bridge": "*",
+        "@nori-zk/tempo-token-bridge": "*",
+        "@nori-zk/ethereum-tempo-proof-queue-utils-glam": "0.0.1",
         "@nori-zk/pts-types": "7.0.2",
         "@yaw-rx/ystate": "^0.1.0",
         "esm-iso-logger": "1.0.2",
         "ethers": "^6.16.0",
-        "rxjs": "^7.8.2",
-        "@solana/program-client-core": "^8.3.0"
-    },
-    "peerDependencies": {
-        "@solana/kit": "^8.3.0"
+        "rxjs": "^7.8.2"
     }
 }

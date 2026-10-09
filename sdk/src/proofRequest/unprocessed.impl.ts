@@ -141,7 +141,7 @@ function getElapsed(
 }
 
 /**
- * The seconds until the batch covering the request is committed on Solana:
+ * The seconds until the batch covering the request is committed on Tempo:
  * after finality, the job a finality transition creates; outside the job
  * Nori is running, the job after it; inside it, that job.
  *

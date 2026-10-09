@@ -51,7 +51,7 @@ describe('unprocessed proof request machine', () => {
     beforeEach(() => jest.useFakeTimers());
     afterEach(() => jest.useRealTimers());
 
-    test('follows a request from finality to its job committing on Solana, recomputing on every observation', () => {
+    test('follows a request from finality to its job committing on Tempo, recomputing on every observation', () => {
         const { nori, send } = createFakeNori();
         const machine = createUnprocessedProofRequestStateMachine(REQUEST_BLOCK, nori)
             .close()
@@ -106,7 +106,7 @@ describe('unprocessed proof request machine', () => {
         expect(latest?.node).toBe('WaitingForCurrentJobCompletion');
         expect(data().commit_time_remaining_sec).toBeCloseTo(2.436 + 0.2, 3);
 
-        // The job is committed on Solana: the request has finished waiting.
+        // The job is committed on Tempo: the request has finished waiting.
         send('state.bridge', bridgeState('EthProcessorTransactionFinalizationSucceeded', NEXT_JOB, 0, NEXT_JOB));
         expect(latest?.node).toBe('FinishedWaiting');
         machine.stop();

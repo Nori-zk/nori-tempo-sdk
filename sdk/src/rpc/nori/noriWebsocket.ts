@@ -5,7 +5,7 @@ import {
 } from '../connection/websocket.js';
 
 /** Nori's websocket server. */
-export const DEFAULT_NORI_WEBSOCKET_URL = 'wss://wss.solana.nori.it.com';
+export const DEFAULT_NORI_WEBSOCKET_URL = 'wss://wss.tempo.nori.it.com';
 
 /**
  * Opens Nori's reconnecting websocket, with the server's ping/pong

@@ -1,23 +1,28 @@
-//! Loading of SP1 `SP1ProofWithPublicValues` JSON dumps into the on-chain
-//! wire format.
+//! Loading of SP1 `SP1ProofWithPublicValues` JSON dumps into the arguments of
+//! `NoriTempoTokenBridge.update`.
 //!
 //! The bridge head (nori-bridge-head) serializes proofs with serde_json.
-//! Only the fields the Solana program needs are decoded here:
+//! Only the fields the bridge contract needs are decoded here:
 //!
 //! ```text
 //! proof.Groth16.encoded_proof     352 B  [exit_code 32][vk_root 32][nonce 32][groth16 256]
-//! proof.Groth16.groth16_vkey_hash  32 B  sha256(groth16_vk.bin); first 4 B prefix the wire proof
-//! proof.Groth16.public_inputs[0]   dec   SP1 program vkey hash (pinned on-chain at initialize)
+//! proof.Groth16.groth16_vkey_hash  32 B  sha256(groth16_vk.bin); first 4 B prefix the proof bytes
+//! proof.Groth16.public_inputs[0]   dec   SP1 program vkey hash (pinned in the bridge at deploy)
 //! public_values.buffer.data       220 B  ProofOutputs layout (see nori-sp1-helios-primitives)
 //! ```
 //!
-//! The on-chain verifier expects `SP1ProofWithPublicValues::bytes()`
-//! (356 B = 4 B vkey-hash prefix ++ the 352 B encoded proof).
+//! The SP1 verifier contract expects `SP1ProofWithPublicValues::bytes()`
+//! (356 B = 4 B verifier selector ++ the 352 B encoded proof).
 
 use alloy_primitives::{hex, U256};
 use serde::Deserialize;
-use sp1_solana::{SP1Groth16Proof, SP1_GROTH16_PROOF_LEN, VK_HASH_PREFIX_LEN};
 use std::path::{Path, PathBuf};
+
+/// The verifier selector: the first 4 bytes of the Groth16 vkey hash.
+pub const VERIFIER_SELECTOR_LEN: usize = 4;
+
+/// `SP1ProofWithPublicValues::bytes()` for a Groth16 proof.
+pub const SP1_GROTH16_PROOF_LEN: usize = 356;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProofFileError {
@@ -68,14 +73,22 @@ struct BufferSection {
     data: Vec<u8>,
 }
 
-/// A proof JSON loaded from disk: the instruction argument plus the SP1
+/// The arguments of `NoriTempoTokenBridge.update`.
+#[derive(Debug, Clone)]
+pub struct UpdateProof {
+    /// `SP1ProofWithPublicValues::bytes()`: the verifier selector, then the encoded proof.
+    pub proof: Vec<u8>,
+    /// `SP1ProofWithPublicValues::public_values`: the 220-byte `ProofOutputs`.
+    pub sp1_public_inputs: Vec<u8>,
+}
+
+/// A proof JSON loaded from disk: the `update` arguments plus the SP1
 /// program vkey hash the proof was produced for.
 pub struct LoadedProof {
-    /// Instruction argument for the program's `update` entrypoint.
-    pub wire: SP1Groth16Proof,
-    /// `public_inputs[0]` — the SP1 program vkey hash (`vk.bytes32()`); must
-    /// equal the `nori_bridge_vk` that `initialize` pins from
-    /// `nori-bridge-head/nori-elf`.
+    /// The arguments of `NoriTempoTokenBridge.update`.
+    pub wire: UpdateProof,
+    /// `public_inputs[0]`: the SP1 program vkey hash (`vk.bytes32()`); must
+    /// equal the `noriBridgeVk` the bridge pins at deploy.
     pub program_vkey: [u8; 32],
 }
 
@@ -87,29 +100,6 @@ impl LoadedProof {
         nori_sp1_helios_primitives::types::ProofOutputs::from_bytes(&self.wire.sp1_public_inputs)
             .map_err(|e| ProofFileError::PublicValues(e.to_string()))
     }
-
-    /// `initialize` arguments that make THIS proof a valid first update: the
-    /// bridge resumes from the proof's own input side (slot, store hash,
-    /// queue cursor) and pins its queue address. This proof (or its chain
-    /// successor) is then the first valid `update`.
-    ///
-    /// `verified_state_root` is the execution state root at the start point;
-    /// it is not part of update-continuity checks.
-    pub fn bridge_init(
-        &self,
-        verified_state_root: alloy_primitives::B256,
-        eth_token_bridge_address: alloy_primitives::Address,
-    ) -> Result<token::state::NoriSolTokenBridgeInit, ProofFileError> {
-        let outputs = self.outputs()?;
-        Ok(token::state::NoriSolTokenBridgeInit {
-            verified_state_root: verified_state_root.into(),
-            latest_helios_store_input_hash: outputs.input_store_hash.into(),
-            eth_proof_queue_address: outputs.proof_request_queue_address.into(),
-            eth_token_bridge_address: eth_token_bridge_address.into(),
-            latest_head: outputs.input_slot,
-            queue_cursor: outputs.input_queue_cursor,
-        })
-    }
 }
 
 fn parse_file(path: &Path) -> Result<LoadedProof, ProofFileError> {
@@ -117,10 +107,10 @@ fn parse_file(path: &Path) -> Result<LoadedProof, ProofFileError> {
     let file: ProofFile = serde_json::from_str(&text)?;
 
     let encoded = hex::decode(&file.proof.groth16.encoded_proof)?;
-    if encoded.len() != SP1_GROTH16_PROOF_LEN - VK_HASH_PREFIX_LEN {
+    if encoded.len() != SP1_GROTH16_PROOF_LEN - VERIFIER_SELECTOR_LEN {
         return Err(ProofFileError::EncodedProofLength {
             got: encoded.len(),
-            want: SP1_GROTH16_PROOF_LEN - VK_HASH_PREFIX_LEN,
+            want: SP1_GROTH16_PROOF_LEN - VERIFIER_SELECTOR_LEN,
         });
     }
     if file.public_values.buffer.data.is_empty() {
@@ -140,11 +130,11 @@ fn parse_file(path: &Path) -> Result<LoadedProof, ProofFileError> {
     }
 
     let mut proof = Vec::with_capacity(SP1_GROTH16_PROOF_LEN);
-    proof.extend_from_slice(&file.proof.groth16.groth16_vkey_hash[..VK_HASH_PREFIX_LEN]);
+    proof.extend_from_slice(&file.proof.groth16.groth16_vkey_hash[..VERIFIER_SELECTOR_LEN]);
     proof.extend_from_slice(&encoded);
 
     Ok(LoadedProof {
-        wire: SP1Groth16Proof {
+        wire: UpdateProof {
             proof,
             sp1_public_inputs: file.public_values.buffer.data,
         },

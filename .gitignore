@@ -1,9 +1,7 @@
-.anchor
 .DS_Store
 target
 **/*.rs.bk
 node_modules
 sdk/build
-test-ledger
+tempo-zk-utils/build
 .yarn
-.surfpool

@@ -3,7 +3,7 @@ import { filter, Subject, Subscription } from 'rxjs';
 import {
     type EthereumProvider,
     parseRpcUrl,
-} from '@nori-zk/ethereum-solana-bridge/iso-provider';
+} from '@nori-zk/ethereum-tempo-bridge/iso-provider';
 import { atNode } from '../../utils/machines.js';
 import { type HealthCheckTimings } from '../connection/healthCheckTimings.js';
 import { type HttpConnectionState } from '../connection/httpConnection.js';

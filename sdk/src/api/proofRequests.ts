@@ -3,8 +3,9 @@ import {
     forCalls,
     forLogs,
     type Nori,
-    type Solana,
+    type Tempo,
 } from '../rpc/connection/connections.js';
+import { connectedReadClientsOf } from '../proofRequest/connectedRead.js';
 import { proofRequestAge as proofRequestAgeFrom } from '../rpc/eth/proofRequestAge.js';
 import {
     fetchProofRequestsByTarget as fetchProofRequestsByTargetFrom,
@@ -21,13 +22,15 @@ import {
 } from '../proofRequest/fetchProofRequestHistory.js';
 import {
     fetchProofRequestWitness as fetchProofRequestWitnessFrom,
+    fetchVerifiedRequestWitness as fetchVerifiedRequestWitnessFrom,
     getProofRequestStateSnapshot as getProofRequestStateSnapshotFrom,
     type ProofRequestStateSnapshot,
     type ProofRequestStateSnapshotRequest,
+    type VerifiedRequestWitness,
 } from '../proofRequest/getProofRequestStateSnapshot.js';
 import { type ProofRequestStateGraph } from '../proofRequest/proofRequest.js';
 import { createUnprocessedProofRequestStateMachine as createUnprocessedProofRequestStateMachineFrom } from '../proofRequest/unprocessed.impl.js';
-import { type RequestWitness } from '@nori-zk/ethereum-solana-proof-queue-utils-glam';
+import { type RequestWitness } from '@nori-zk/ethereum-tempo-proof-queue-utils-glam';
 
 // The machines.
 export {
@@ -78,7 +81,7 @@ export type {
     ProofRequestHistoryOrder,
 } from '../rpc/eth/fetchProofRequestsByTarget.js';
 export type { ProofRequestHistoryEntry } from '../proofRequest/fetchProofRequestHistory.js';
-export type { RequestLeaf } from '@nori-zk/ethereum-solana-proof-queue-utils-glam';
+export type { RequestLeaf } from '@nori-zk/ethereum-tempo-proof-queue-utils-glam';
 export type {
     ProofRequest,
     ProofRequestCounts,
@@ -89,6 +92,7 @@ export type {
     ProofRequestStateSnapshot,
     ProofRequestStateSnapshotRequest,
     RequestWitness,
+    VerifiedRequestWitness,
 };
 
 /**
@@ -106,18 +110,17 @@ export function createUnprocessedProofRequestStateMachine(
 }
 
 /**
- * Where a proof request is, read once from Ethereum and Solana.
+ * Where a proof request is, read once from Ethereum and Tempo.
  *
- * @param chains The Ethereum and Solana chains.
+ * @param chains The Ethereum and Tempo chains.
  * @param request The addresses and the transaction that enqueued the request.
  * @returns The unprocessed or proof available state data.
  */
-export async function getProofRequestStateSnapshot(
-    { ethereum, solana }: { ethereum: Ethereum; solana: Solana },
+export function getProofRequestStateSnapshot(
+    chains: { ethereum: Ethereum; tempo: Tempo },
     request: ProofRequestStateSnapshotRequest
 ): Promise<ProofRequestStateSnapshot> {
-    const rpc = await solana.http.ready();
-    return forCalls(ethereum, getProofRequestStateSnapshotFrom, rpc, request);
+    return getProofRequestStateSnapshotFrom(connectedReadClientsOf(chains), request);
 }
 
 /**
@@ -137,38 +140,54 @@ export function getProofRequestWitness(
 }
 
 /**
+ * The witness of a proof request whose proof is available, in the shape the
+ * Tempo contracts take: what `mint`, `mintERC20` and `applyPause` (and
+ * `NoriRead`'s request witness) are given.
+ *
+ * @param ethereum The Ethereum chain.
+ * @param proofAvailable The proof available state data.
+ * @param proofQueueAddress The Ethereum `NoriProofRequestQueue` address.
+ * @returns The request's bottom-up path, its index in the batch, and the request.
+ */
+export function getVerifiedRequestWitness(
+    ethereum: Ethereum,
+    proofAvailable: (typeof ProofRequestStateGraph.nodes)['proofAvailable'],
+    proofQueueAddress: string
+): Promise<VerifiedRequestWitness> {
+    return forLogs(ethereum, fetchVerifiedRequestWitnessFrom, proofAvailable, proofQueueAddress);
+}
+
+/**
  * One page of a submitting address's proof requests, each with where it is now.
  *
- * @param chains The Ethereum and Solana chains.
- * @param addresses The queue and program addresses.
+ * @param chains The Ethereum and Tempo chains.
+ * @param addresses The queue and bridge addresses.
  * @param query The submitting address, block range, order, page size and cursor.
  * @returns The page's entries, its continuation cursor, and whether the range is exhausted.
  */
-export async function getProofRequestHistoryPage(
-    { ethereum, solana }: { ethereum: Ethereum; solana: Solana },
+export function getProofRequestHistoryPage(
+    chains: { ethereum: Ethereum; tempo: Tempo },
     addresses: ProofRequestHistoryAddresses,
     query: ProofRequestsByTargetQuery
 ): Promise<ProofRequestHistoryPage> {
-    const rpc = await solana.http.ready();
-    return forLogs(ethereum, fetchProofRequestHistoryPageFrom, rpc, addresses, query);
+    return fetchProofRequestHistoryPageFrom(connectedReadClientsOf(chains, 'logs'), addresses, query);
 }
 
 /**
  * How many proof requests a submitting address made over a block range, and
  * how many have a proof available.
  *
- * @param chains The Ethereum and Solana chains.
- * @param addresses The queue and program addresses.
+ * @param chains The Ethereum and Tempo chains.
+ * @param addresses The queue and bridge addresses.
  * @param query The submitting address and block range.
  * @returns The total, proven and unprocessed counts.
  */
-export async function getProofRequestCountsByTarget(
-    { ethereum, solana }: { ethereum: Ethereum; solana: Solana },
+export function getProofRequestCountsByTarget(
+    chains: { ethereum: Ethereum; tempo: Tempo },
     addresses: ProofRequestHistoryAddresses,
     query: Pick<ProofRequestsByTargetQuery, 'target' | 'fromBlock' | 'toBlock' | 'maxBlockRangePerQuery'>
 ): Promise<ProofRequestCounts> {
-    const rpc = await solana.http.ready();
-    return forLogs(ethereum, fetchProofRequestCountsByTargetFrom, rpc, addresses, query);
+    return fetchProofRequestCountsByTargetFrom(connectedReadClientsOf(chains, 'logs'), addresses, query);
 }
 
 /**

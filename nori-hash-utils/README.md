@@ -1,9 +1,9 @@
-# @nori-zk/ethereum-solana-proof-queue-utils-glam
+# @nori-zk/ethereum-tempo-proof-queue-utils-glam
 
 Proof queue request leaf and Merkle witness hashing for the Nori bridge,
 compiled to WebAssembly from `nori-hash`, the code the SP1 guest runs to
 build each proof queue batch's `verified_requests_root`. A witness built
-here verifies against the batch root the Solana program stores.
+here verifies against the batch root the Tempo bridge contract stores.
 
 ## Functions
 
@@ -23,7 +23,7 @@ All values are 0x-prefixed hex. Types and their docs are in
 
 This runs `wasm-pack build --features wasm` into `pkg/`. The crate
 is a member of the SDK's Cargo workspace and shares its lock, and depends on
-`nori-hash` from nori-bridge-head's `FEAT/solana-bridge-sepolia-glamsterdam`
+`nori-hash` from nori-bridge-head's `FEAT/tempo-bridge-sepolia-glamsterdam`
 branch without its default `helios` feature.
 
 ## Release npm package

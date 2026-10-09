@@ -4,7 +4,7 @@ import type { ProofRequestHistoryEntry } from './fetchProofRequestHistory.js';
 
 /**
  * A live view of a submitting address's newest N proof requests, newest
- * first, reading through the Ethereum provider and Solana RPC connectivity
+ * first, reading through the Ethereum and Tempo connectivity
  * machines. It never ends on its own and nothing is a dead end: lost
  * connections are waited for and failures retry themselves.
  *

@@ -6,9 +6,9 @@ import type { TypedContractEvent, TypedDeferredTopicFilter, TypedEventLog, Typed
   
 
   export interface NoriTokenBridgeInterface extends Interface {
-    getFunction(nameOrSignature: "DECIMALS" | "FEE_DENOMINATOR" | "MAX_FEE_RATE" | "MAX_MAGNITUDE" | "MIN_FEE_BU" | "MIN_LOCK_AMOUNT_WEI" | "WEI_PER_BRIDGE_UNIT" | "accumulatedFees" | "bridgeOperator" | "calcGrossLockAmount" | "feeRecipient" | "lockFeeRate" | "lockTokens" | "lockedTokens" | "previewLock" | "proofQueue" | "setBridgeOperator" | "setFeeRecipient" | "setLockFeeRate" | "totalLockedBU" | "unlockTokens" | "withdrawFees"): FunctionFragment;
+    getFunction(nameOrSignature: "DECIMALS" | "FEE_DENOMINATOR" | "MAX_FEE_RATE" | "MAX_MAGNITUDE" | "MIN_FEE_BU" | "MIN_LOCK_AMOUNT_WEI" | "PAUSE_KEY" | "PAUSE_STATE_PAUSED" | "PAUSE_STATE_UNPAUSED" | "WEI_PER_BRIDGE_UNIT" | "accumulatedFees" | "accumulatedTokenFees" | "bridgeOperator" | "calcGrossLockAmount" | "feeRecipient" | "lockERC20" | "lockFeeRate" | "lockTokens" | "lockedERC20" | "lockedTokens" | "pauseState" | "previewLock" | "previewLockERC20" | "proofQueue" | "setBridgeOperator" | "setFeeRecipient" | "setLockFeeRate" | "syncPause" | "totalLockedBU" | "totalLockedERC20BU" | "unlockTokens" | "withdrawFees" | "withdrawTokenFees"): FunctionFragment;
 
-    getEvent(nameOrSignatureOrTopic: "BridgeOperatorSet" | "FeeRecipientSet" | "FeesWithdrawn" | "LockFeeRateSet" | "TokensLocked"): EventFragment;
+    getEvent(nameOrSignatureOrTopic: "BridgeOperatorSet" | "ERC20Locked" | "FeeRecipientSet" | "FeesWithdrawn" | "LockFeeRateSet" | "PauseSynced" | "TokenFeesWithdrawn" | "TokensLocked"): EventFragment;
 
     encodeFunctionData(functionFragment: 'DECIMALS', values?: undefined): string;
 encodeFunctionData(functionFragment: 'FEE_DENOMINATOR', values?: undefined): string;
@@ -16,22 +16,33 @@ encodeFunctionData(functionFragment: 'MAX_FEE_RATE', values?: undefined): string
 encodeFunctionData(functionFragment: 'MAX_MAGNITUDE', values?: undefined): string;
 encodeFunctionData(functionFragment: 'MIN_FEE_BU', values?: undefined): string;
 encodeFunctionData(functionFragment: 'MIN_LOCK_AMOUNT_WEI', values?: undefined): string;
+encodeFunctionData(functionFragment: 'PAUSE_KEY', values?: undefined): string;
+encodeFunctionData(functionFragment: 'PAUSE_STATE_PAUSED', values?: undefined): string;
+encodeFunctionData(functionFragment: 'PAUSE_STATE_UNPAUSED', values?: undefined): string;
 encodeFunctionData(functionFragment: 'WEI_PER_BRIDGE_UNIT', values?: undefined): string;
 encodeFunctionData(functionFragment: 'accumulatedFees', values?: undefined): string;
+encodeFunctionData(functionFragment: 'accumulatedTokenFees', values: [AddressLike]): string;
 encodeFunctionData(functionFragment: 'bridgeOperator', values?: undefined): string;
 encodeFunctionData(functionFragment: 'calcGrossLockAmount', values: [BigNumberish]): string;
 encodeFunctionData(functionFragment: 'feeRecipient', values?: undefined): string;
+encodeFunctionData(functionFragment: 'lockERC20', values: [AddressLike, BigNumberish, BigNumberish]): string;
 encodeFunctionData(functionFragment: 'lockFeeRate', values?: undefined): string;
 encodeFunctionData(functionFragment: 'lockTokens', values: [BigNumberish]): string;
+encodeFunctionData(functionFragment: 'lockedERC20', values: [AddressLike, BigNumberish]): string;
 encodeFunctionData(functionFragment: 'lockedTokens', values: [BigNumberish]): string;
+encodeFunctionData(functionFragment: 'pauseState', values: [AddressLike]): string;
 encodeFunctionData(functionFragment: 'previewLock', values: [BigNumberish]): string;
+encodeFunctionData(functionFragment: 'previewLockERC20', values: [AddressLike, BigNumberish]): string;
 encodeFunctionData(functionFragment: 'proofQueue', values?: undefined): string;
 encodeFunctionData(functionFragment: 'setBridgeOperator', values: [AddressLike]): string;
 encodeFunctionData(functionFragment: 'setFeeRecipient', values: [AddressLike]): string;
 encodeFunctionData(functionFragment: 'setLockFeeRate', values: [BigNumberish]): string;
+encodeFunctionData(functionFragment: 'syncPause', values: [AddressLike]): string;
 encodeFunctionData(functionFragment: 'totalLockedBU', values?: undefined): string;
+encodeFunctionData(functionFragment: 'totalLockedERC20BU', values: [AddressLike]): string;
 encodeFunctionData(functionFragment: 'unlockTokens', values?: undefined): string;
 encodeFunctionData(functionFragment: 'withdrawFees', values?: undefined): string;
+encodeFunctionData(functionFragment: 'withdrawTokenFees', values: [AddressLike]): string;
 
     decodeFunctionResult(functionFragment: 'DECIMALS', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'FEE_DENOMINATOR', data: BytesLike): Result;
@@ -39,22 +50,33 @@ decodeFunctionResult(functionFragment: 'MAX_FEE_RATE', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'MAX_MAGNITUDE', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'MIN_FEE_BU', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'MIN_LOCK_AMOUNT_WEI', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'PAUSE_KEY', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'PAUSE_STATE_PAUSED', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'PAUSE_STATE_UNPAUSED', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'WEI_PER_BRIDGE_UNIT', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'accumulatedFees', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'accumulatedTokenFees', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'bridgeOperator', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'calcGrossLockAmount', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'feeRecipient', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'lockERC20', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'lockFeeRate', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'lockTokens', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'lockedERC20', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'lockedTokens', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'pauseState', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'previewLock', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'previewLockERC20', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'proofQueue', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'setBridgeOperator', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'setFeeRecipient', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'setLockFeeRate', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'syncPause', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'totalLockedBU', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'totalLockedERC20BU', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'unlockTokens', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'withdrawFees', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'withdrawTokenFees', data: BytesLike): Result;
   }
 
   
@@ -62,6 +84,18 @@ decodeFunctionResult(functionFragment: 'withdrawFees', data: BytesLike): Result;
       export type InputTuple = [oldOperator: AddressLike, newOperator: AddressLike];
       export type OutputTuple = [oldOperator: string, newOperator: string];
       export interface OutputObject {oldOperator: string, newOperator: string };
+      export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>
+      export type Filter = TypedDeferredTopicFilter<Event>
+      export type Log = TypedEventLog<Event>
+      export type LogDescription = TypedLogDescription<Event>
+    }
+
+  
+
+    export namespace ERC20LockedEvent {
+      export type InputTuple = [user: AddressLike, token: AddressLike, codeChallenge: BigNumberish, amount: BigNumberish, fee: BigNumberish];
+      export type OutputTuple = [user: string, token: string, codeChallenge: bigint, amount: bigint, fee: bigint];
+      export interface OutputObject {user: string, token: string, codeChallenge: bigint, amount: bigint, fee: bigint };
       export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>
       export type Filter = TypedDeferredTopicFilter<Event>
       export type Log = TypedEventLog<Event>
@@ -98,6 +132,30 @@ decodeFunctionResult(functionFragment: 'withdrawFees', data: BytesLike): Result;
       export type InputTuple = [oldRate: BigNumberish, newRate: BigNumberish];
       export type OutputTuple = [oldRate: bigint, newRate: bigint];
       export interface OutputObject {oldRate: bigint, newRate: bigint };
+      export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>
+      export type Filter = TypedDeferredTopicFilter<Event>
+      export type Log = TypedEventLog<Event>
+      export type LogDescription = TypedLogDescription<Event>
+    }
+
+  
+
+    export namespace PauseSyncedEvent {
+      export type InputTuple = [token: AddressLike, paused: boolean];
+      export type OutputTuple = [token: string, paused: boolean];
+      export interface OutputObject {token: string, paused: boolean };
+      export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>
+      export type Filter = TypedDeferredTopicFilter<Event>
+      export type Log = TypedEventLog<Event>
+      export type LogDescription = TypedLogDescription<Event>
+    }
+
+  
+
+    export namespace TokenFeesWithdrawnEvent {
+      export type InputTuple = [recipient: AddressLike, token: AddressLike, amount: BigNumberish];
+      export type OutputTuple = [recipient: string, token: string, amount: bigint];
+      export interface OutputObject {recipient: string, token: string, amount: bigint };
       export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>
       export type Filter = TypedDeferredTopicFilter<Event>
       export type Log = TypedEventLog<Event>
@@ -200,6 +258,30 @@ decodeFunctionResult(functionFragment: 'withdrawFees', data: BytesLike): Result;
     
 
     
+    PAUSE_KEY: TypedContractMethod<
+      [],
+      [string],
+      'view'
+    >
+    
+
+    
+    PAUSE_STATE_PAUSED: TypedContractMethod<
+      [],
+      [bigint],
+      'view'
+    >
+    
+
+    
+    PAUSE_STATE_UNPAUSED: TypedContractMethod<
+      [],
+      [bigint],
+      'view'
+    >
+    
+
+    
     WEI_PER_BRIDGE_UNIT: TypedContractMethod<
       [],
       [bigint],
@@ -210,6 +292,14 @@ decodeFunctionResult(functionFragment: 'withdrawFees', data: BytesLike): Result;
     
     accumulatedFees: TypedContractMethod<
       [],
+      [bigint],
+      'view'
+    >
+    
+
+    
+    accumulatedTokenFees: TypedContractMethod<
+      [arg0: AddressLike, ],
       [bigint],
       'view'
     >
@@ -240,6 +330,14 @@ decodeFunctionResult(functionFragment: 'withdrawFees', data: BytesLike): Result;
     
 
     
+    lockERC20: TypedContractMethod<
+      [token: AddressLike, amount: BigNumberish, codeChallenge: BigNumberish, ],
+      [void],
+      'payable'
+    >
+    
+
+    
     lockFeeRate: TypedContractMethod<
       [],
       [bigint],
@@ -256,8 +354,24 @@ decodeFunctionResult(functionFragment: 'withdrawFees', data: BytesLike): Result;
     
 
     
+    lockedERC20: TypedContractMethod<
+      [arg0: AddressLike, arg1: BigNumberish, ],
+      [bigint],
+      'view'
+    >
+    
+
+    
     lockedTokens: TypedContractMethod<
       [arg0: BigNumberish, ],
+      [bigint],
+      'view'
+    >
+    
+
+    
+    pauseState: TypedContractMethod<
+      [arg0: AddressLike, ],
       [bigint],
       'view'
     >
@@ -267,6 +381,14 @@ decodeFunctionResult(functionFragment: 'withdrawFees', data: BytesLike): Result;
     previewLock: TypedContractMethod<
       [grossAmount: BigNumberish, ],
       [[bigint, bigint] & {feeWei: bigint, netWei: bigint }],
+      'view'
+    >
+    
+
+    
+    previewLockERC20: TypedContractMethod<
+      [token: AddressLike, amount: BigNumberish, ],
+      [[bigint, bigint, bigint] & {queueFeeWei: bigint, fee: bigint, net: bigint }],
       'view'
     >
     
@@ -304,8 +426,24 @@ decodeFunctionResult(functionFragment: 'withdrawFees', data: BytesLike): Result;
     
 
     
+    syncPause: TypedContractMethod<
+      [token: AddressLike, ],
+      [void],
+      'payable'
+    >
+    
+
+    
     totalLockedBU: TypedContractMethod<
       [],
+      [bigint],
+      'view'
+    >
+    
+
+    
+    totalLockedERC20BU: TypedContractMethod<
+      [arg0: AddressLike, ],
       [bigint],
       'view'
     >
@@ -315,13 +453,21 @@ decodeFunctionResult(functionFragment: 'withdrawFees', data: BytesLike): Result;
     unlockTokens: TypedContractMethod<
       [],
       [void],
-      'nonpayable'
+      'view'
     >
     
 
     
     withdrawFees: TypedContractMethod<
       [],
+      [void],
+      'nonpayable'
+    >
+    
+
+    
+    withdrawTokenFees: TypedContractMethod<
+      [token: AddressLike, ],
       [void],
       'nonpayable'
     >
@@ -360,6 +506,21 @@ getFunction(nameOrSignature: 'MIN_LOCK_AMOUNT_WEI'): TypedContractMethod<
       [bigint],
       'view'
     >;
+getFunction(nameOrSignature: 'PAUSE_KEY'): TypedContractMethod<
+      [],
+      [string],
+      'view'
+    >;
+getFunction(nameOrSignature: 'PAUSE_STATE_PAUSED'): TypedContractMethod<
+      [],
+      [bigint],
+      'view'
+    >;
+getFunction(nameOrSignature: 'PAUSE_STATE_UNPAUSED'): TypedContractMethod<
+      [],
+      [bigint],
+      'view'
+    >;
 getFunction(nameOrSignature: 'WEI_PER_BRIDGE_UNIT'): TypedContractMethod<
       [],
       [bigint],
@@ -367,6 +528,11 @@ getFunction(nameOrSignature: 'WEI_PER_BRIDGE_UNIT'): TypedContractMethod<
     >;
 getFunction(nameOrSignature: 'accumulatedFees'): TypedContractMethod<
       [],
+      [bigint],
+      'view'
+    >;
+getFunction(nameOrSignature: 'accumulatedTokenFees'): TypedContractMethod<
+      [arg0: AddressLike, ],
       [bigint],
       'view'
     >;
@@ -385,6 +551,11 @@ getFunction(nameOrSignature: 'feeRecipient'): TypedContractMethod<
       [string],
       'view'
     >;
+getFunction(nameOrSignature: 'lockERC20'): TypedContractMethod<
+      [token: AddressLike, amount: BigNumberish, codeChallenge: BigNumberish, ],
+      [void],
+      'payable'
+    >;
 getFunction(nameOrSignature: 'lockFeeRate'): TypedContractMethod<
       [],
       [bigint],
@@ -395,14 +566,29 @@ getFunction(nameOrSignature: 'lockTokens'): TypedContractMethod<
       [void],
       'payable'
     >;
+getFunction(nameOrSignature: 'lockedERC20'): TypedContractMethod<
+      [arg0: AddressLike, arg1: BigNumberish, ],
+      [bigint],
+      'view'
+    >;
 getFunction(nameOrSignature: 'lockedTokens'): TypedContractMethod<
       [arg0: BigNumberish, ],
+      [bigint],
+      'view'
+    >;
+getFunction(nameOrSignature: 'pauseState'): TypedContractMethod<
+      [arg0: AddressLike, ],
       [bigint],
       'view'
     >;
 getFunction(nameOrSignature: 'previewLock'): TypedContractMethod<
       [grossAmount: BigNumberish, ],
       [[bigint, bigint] & {feeWei: bigint, netWei: bigint }],
+      'view'
+    >;
+getFunction(nameOrSignature: 'previewLockERC20'): TypedContractMethod<
+      [token: AddressLike, amount: BigNumberish, ],
+      [[bigint, bigint, bigint] & {queueFeeWei: bigint, fee: bigint, net: bigint }],
       'view'
     >;
 getFunction(nameOrSignature: 'proofQueue'): TypedContractMethod<
@@ -425,32 +611,54 @@ getFunction(nameOrSignature: 'setLockFeeRate'): TypedContractMethod<
       [void],
       'nonpayable'
     >;
+getFunction(nameOrSignature: 'syncPause'): TypedContractMethod<
+      [token: AddressLike, ],
+      [void],
+      'payable'
+    >;
 getFunction(nameOrSignature: 'totalLockedBU'): TypedContractMethod<
       [],
+      [bigint],
+      'view'
+    >;
+getFunction(nameOrSignature: 'totalLockedERC20BU'): TypedContractMethod<
+      [arg0: AddressLike, ],
       [bigint],
       'view'
     >;
 getFunction(nameOrSignature: 'unlockTokens'): TypedContractMethod<
       [],
       [void],
-      'nonpayable'
+      'view'
     >;
 getFunction(nameOrSignature: 'withdrawFees'): TypedContractMethod<
       [],
       [void],
       'nonpayable'
     >;
+getFunction(nameOrSignature: 'withdrawTokenFees'): TypedContractMethod<
+      [token: AddressLike, ],
+      [void],
+      'nonpayable'
+    >;
 
     getEvent(key: 'BridgeOperatorSet'): TypedContractEvent<BridgeOperatorSetEvent.InputTuple, BridgeOperatorSetEvent.OutputTuple, BridgeOperatorSetEvent.OutputObject>;
+getEvent(key: 'ERC20Locked'): TypedContractEvent<ERC20LockedEvent.InputTuple, ERC20LockedEvent.OutputTuple, ERC20LockedEvent.OutputObject>;
 getEvent(key: 'FeeRecipientSet'): TypedContractEvent<FeeRecipientSetEvent.InputTuple, FeeRecipientSetEvent.OutputTuple, FeeRecipientSetEvent.OutputObject>;
 getEvent(key: 'FeesWithdrawn'): TypedContractEvent<FeesWithdrawnEvent.InputTuple, FeesWithdrawnEvent.OutputTuple, FeesWithdrawnEvent.OutputObject>;
 getEvent(key: 'LockFeeRateSet'): TypedContractEvent<LockFeeRateSetEvent.InputTuple, LockFeeRateSetEvent.OutputTuple, LockFeeRateSetEvent.OutputObject>;
+getEvent(key: 'PauseSynced'): TypedContractEvent<PauseSyncedEvent.InputTuple, PauseSyncedEvent.OutputTuple, PauseSyncedEvent.OutputObject>;
+getEvent(key: 'TokenFeesWithdrawn'): TypedContractEvent<TokenFeesWithdrawnEvent.InputTuple, TokenFeesWithdrawnEvent.OutputTuple, TokenFeesWithdrawnEvent.OutputObject>;
 getEvent(key: 'TokensLocked'): TypedContractEvent<TokensLockedEvent.InputTuple, TokensLockedEvent.OutputTuple, TokensLockedEvent.OutputObject>;
 
     filters: {
       
       'BridgeOperatorSet(address,address)': TypedContractEvent<BridgeOperatorSetEvent.InputTuple, BridgeOperatorSetEvent.OutputTuple, BridgeOperatorSetEvent.OutputObject>;
       BridgeOperatorSet: TypedContractEvent<BridgeOperatorSetEvent.InputTuple, BridgeOperatorSetEvent.OutputTuple, BridgeOperatorSetEvent.OutputObject>;
+    
+
+      'ERC20Locked(address,address,uint256,uint256,uint256)': TypedContractEvent<ERC20LockedEvent.InputTuple, ERC20LockedEvent.OutputTuple, ERC20LockedEvent.OutputObject>;
+      ERC20Locked: TypedContractEvent<ERC20LockedEvent.InputTuple, ERC20LockedEvent.OutputTuple, ERC20LockedEvent.OutputObject>;
     
 
       'FeeRecipientSet(address,address)': TypedContractEvent<FeeRecipientSetEvent.InputTuple, FeeRecipientSetEvent.OutputTuple, FeeRecipientSetEvent.OutputObject>;
@@ -463,6 +671,14 @@ getEvent(key: 'TokensLocked'): TypedContractEvent<TokensLockedEvent.InputTuple, 
 
       'LockFeeRateSet(uint16,uint16)': TypedContractEvent<LockFeeRateSetEvent.InputTuple, LockFeeRateSetEvent.OutputTuple, LockFeeRateSetEvent.OutputObject>;
       LockFeeRateSet: TypedContractEvent<LockFeeRateSetEvent.InputTuple, LockFeeRateSetEvent.OutputTuple, LockFeeRateSetEvent.OutputObject>;
+    
+
+      'PauseSynced(address,bool)': TypedContractEvent<PauseSyncedEvent.InputTuple, PauseSyncedEvent.OutputTuple, PauseSyncedEvent.OutputObject>;
+      PauseSynced: TypedContractEvent<PauseSyncedEvent.InputTuple, PauseSyncedEvent.OutputTuple, PauseSyncedEvent.OutputObject>;
+    
+
+      'TokenFeesWithdrawn(address,address,uint256)': TypedContractEvent<TokenFeesWithdrawnEvent.InputTuple, TokenFeesWithdrawnEvent.OutputTuple, TokenFeesWithdrawnEvent.OutputObject>;
+      TokenFeesWithdrawn: TypedContractEvent<TokenFeesWithdrawnEvent.InputTuple, TokenFeesWithdrawnEvent.OutputTuple, TokenFeesWithdrawnEvent.OutputObject>;
     
 
       'TokensLocked(address,uint256,uint256,uint256)': TypedContractEvent<TokensLockedEvent.InputTuple, TokensLockedEvent.OutputTuple, TokensLockedEvent.OutputObject>;

@@ -4,16 +4,12 @@ import path from "path";
 import { fileURLToPath } from "url";
 import "../logger.js";
 import { Logger } from "esm-iso-logger";
+import { MAX_PROOF_REQUEST_QUEUE_FEE, PROOF_REQUEST_QUEUE_FEE_GRANULARITY_WEI } from "../contracts/NoriProofRequestQueue.const.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const logger = new Logger("Deploy");
-
-// Mirrors NoriProofRequestQueue; validated here so a bad value fails before
-// anything is deployed.
-const PROOF_REQUEST_QUEUE_FEE_GRANULARITY_WEI = 10n ** 12n;
-const MAX_PROOF_REQUEST_QUEUE_FEE_WEI = 5n * 10n ** 16n; // 0.05 ETH
 
 export const deploy = task(
   "deploy",
@@ -44,9 +40,9 @@ export const deploy = task(
             `NORI_ETH_BRIDGE_PROOF_REQUEST_QUEUE_FEE_WEI must be an integer amount of wei, got: ${possibleProofRequestQueueFeeWei}`
           );
         }
-        if (proofRequestQueueFeeWei > MAX_PROOF_REQUEST_QUEUE_FEE_WEI)
+        if (proofRequestQueueFeeWei > MAX_PROOF_REQUEST_QUEUE_FEE)
           issues.push(
-            `NORI_ETH_BRIDGE_PROOF_REQUEST_QUEUE_FEE_WEI exceeds MAX_PROOF_REQUEST_QUEUE_FEE of ${MAX_PROOF_REQUEST_QUEUE_FEE_WEI.toString()} wei`
+            `NORI_ETH_BRIDGE_PROOF_REQUEST_QUEUE_FEE_WEI exceeds MAX_PROOF_REQUEST_QUEUE_FEE of ${MAX_PROOF_REQUEST_QUEUE_FEE.toString()} wei`
           );
         if (
           proofRequestQueueFeeWei % PROOF_REQUEST_QUEUE_FEE_GRANULARITY_WEI !==

@@ -86,8 +86,8 @@ export function jsonRpcRequest(
 }
 
 /**
- * One JSON-RPC subscription on a reconnecting websocket, as Solana and
- * Ethereum nodes serve them, through `multiplex`: `subscribeMethod` is sent
+ * One JSON-RPC subscription on a reconnecting websocket, as Ethereum and
+ * Tempo nodes serve them, through `multiplex`: `subscribeMethod` is sent
  * when the stream is subscribed and again every time the socket opens; each
  * reply gives a new subscription id, and notifications carrying it are
  * passed on; `unsubscribeMethod` is sent when the stream is unsubscribed.

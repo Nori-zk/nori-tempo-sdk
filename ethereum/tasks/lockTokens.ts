@@ -1,6 +1,7 @@
 import { task } from "hardhat/config";
 import "../logger.js";
 import { Logger } from "esm-iso-logger";
+import { WEI_PER_BRIDGE_UNIT } from "../contracts/NoriTokenBridge.const.js";
 
 const logger = new Logger("LockTokens");
 
@@ -66,7 +67,6 @@ export const lockTokens = task(
 
       const deployedAddress = possibleDeployedAddress as string;
       const lockAmount = ethers.parseEther(parsedAmount.toString());
-      const WEI_PER_BRIDGE_UNIT = 10n ** 12n;
 
       logger.log(`NORI_ETH_TOKEN_BRIDGE_ADDRESS: ${deployedAddress}`);
 

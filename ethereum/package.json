@@ -1,5 +1,5 @@
 {
-    "name": "@nori-zk/ethereum-solana-bridge",
+    "name": "@nori-zk/ethereum-tempo-bridge",
     "version": "0.0.1",
     "description": "NoriTokenBridge contract",
     "main": "build/index.js",
@@ -20,6 +20,9 @@
         "build": "ETH_NETWORK=hardhat npm run clean && ETH_NETWORK=hardhat hardhat compile && node stabilize-types.mjs . && tsc -p tsconfig.package.json",
         "test": "ETH_NETWORK=hardhat hardhat test; code=$?; node stabilize-types.mjs . && exit $code",
         "test-ci": "ETH_NETWORK=hardhat hardhat test; code=$?; node stabilize-types.mjs . && exit $code",
+        "test:fork": "ETH_NETWORK=hardhat hardhat test mocha test-fork/*.ts; code=$?; node stabilize-types.mjs . && exit $code",
+        "node:fork": "ETH_NETWORK=hardhat hardhat node --network mainnetFork",
+        "test:erc20-fork-flow": "bash scripts/erc20-fork-check.sh",
         "typecheck": "tsc --noEmit",
         "clean": "hardhat clean",
         "format": "prettier --check --ignore-unknown **/*",
@@ -36,7 +39,11 @@
         "withdraw-fees": "dotenv -e .env -- sh -c 'npx hardhat --network $ETH_NETWORK withdrawFees'",
         "set-proof-request-queue-fee": "dotenv -e .env -- sh -c 'npx hardhat --network $ETH_NETWORK setProofRequestQueueFee \"$@\"' --",
         "withdraw-proof-request-queue-fees": "dotenv -e .env -- sh -c 'npx hardhat --network $ETH_NETWORK withdrawProofRequestQueueFees'",
-        "set-bridge-operator": "dotenv -e .env -- sh -c 'npx hardhat --network $ETH_NETWORK setBridgeOperator \"$@\"' --"
+        "set-bridge-operator": "dotenv -e .env -- sh -c 'npx hardhat --network $ETH_NETWORK setBridgeOperator \"$@\"' --",
+        "test:lock-erc20": "dotenv -e .env -- sh -c 'npx hardhat --network $ETH_NETWORK lockERC20 \"$@\"' --",
+        "test:fund-from-holder": "dotenv -e .env -- sh -c 'npx hardhat --network $ETH_NETWORK fundFromHolder \"$@\"' --",
+        "sync-pause": "dotenv -e .env -- sh -c 'npx hardhat --network $ETH_NETWORK syncPause \"$@\"' --",
+        "withdraw-token-fees": "dotenv -e .env -- sh -c 'npx hardhat --network $ETH_NETWORK withdrawTokenFees \"$@\"' --"
     },
     "author": "",
     "license": "MIT",

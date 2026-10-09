@@ -1,13 +1,9 @@
 import { task } from "hardhat/config";
 import "../logger.js";
 import { Logger } from "esm-iso-logger";
+import { MAX_PROOF_REQUEST_QUEUE_FEE, PROOF_REQUEST_QUEUE_FEE_GRANULARITY_WEI } from "../contracts/NoriProofRequestQueue.const.js";
 
 const logger = new Logger("SetProofRequestQueueFee");
-
-// Mirrors NoriProofRequestQueue; validated here so a bad value fails before
-// it costs a transaction.
-const PROOF_REQUEST_QUEUE_FEE_GRANULARITY_WEI = 10n ** 12n;
-const MAX_PROOF_REQUEST_QUEUE_FEE_WEI = 5n * 10n ** 16n; // 0.05 ETH
 
 export const setProofRequestQueueFee = task(
   "setProofRequestQueueFee",
@@ -46,10 +42,10 @@ export const setProofRequestQueueFee = task(
       }
 
       if (parsedFeeWei !== null) {
-        if (parsedFeeWei > MAX_PROOF_REQUEST_QUEUE_FEE_WEI) {
+        if (parsedFeeWei > MAX_PROOF_REQUEST_QUEUE_FEE) {
           issues.push(
             `Fee ${fee} ETH exceeds MAX_PROOF_REQUEST_QUEUE_FEE of ${ethers.formatEther(
-              MAX_PROOF_REQUEST_QUEUE_FEE_WEI
+              MAX_PROOF_REQUEST_QUEUE_FEE
             )} ETH`
           );
         }

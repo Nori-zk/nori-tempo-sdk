@@ -1,6 +1,6 @@
 import { BrowserProvider, Network } from 'ethers';
 import { filter } from 'rxjs';
-import { type EthereumProvider } from '@nori-zk/ethereum-solana-bridge/iso-provider';
+import { type EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
 import { resolveHealthCheckTimings } from '../connection/healthCheckTimings.js';
 import { jsonRpcRequest } from '../connection/jsonRpcTopic.js';
 import { type NetworkMachine } from '../connection/network.impl.js';

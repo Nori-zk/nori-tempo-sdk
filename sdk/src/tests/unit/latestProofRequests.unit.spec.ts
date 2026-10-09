@@ -3,9 +3,10 @@ import { filter, firstValueFrom, map } from 'rxjs';
 import { type ProofRequestHistoryEntry } from '../../proofRequest/fetchProofRequestHistory.js';
 import { createLatestProofRequestsMachine } from '../../proofRequest/latestProofRequests.impl.js';
 import {
+    BRIDGE_ADDRESS,
     createContiguousBatches,
     createFakeEthereumProvider,
-    createFakeSolanaRpc,
+    createFakeTempoProvider,
     createTestConnections,
     FAST_TIMINGS,
     QUEUE_ADDRESS,
@@ -15,7 +16,7 @@ import {
     type FakeProofRequest,
 } from '../testUtils.js';
 
-const addresses = { proofQueueAddress: QUEUE_ADDRESS };
+const addresses = { proofQueueAddress: QUEUE_ADDRESS, bridgeAddress: BRIDGE_ADDRESS };
 
 /** 40 requests three blocks apart from block 100; target A enqueued the even ids. */
 function createRequests(): FakeProofRequest[] {
@@ -42,13 +43,13 @@ const describeView = (data: unknown) =>
 
 async function setUp(requests: FakeProofRequest[], queueCursor: number) {
     const ethereum = createFakeEthereumProvider(requests, { latestBlock: 400 });
-    const solana = await createFakeSolanaRpc(batchesUpTo(queueCursor));
-    const test = createTestConnections(ethereum.provider, solana.rpc);
+    const tempo = createFakeTempoProvider(batchesUpTo(queueCursor));
+    const test = createTestConnections(ethereum.provider, tempo.provider);
     await Promise.all([
         reach(test.connections.ethereum.http.connection, 'ready'),
-        reach(test.connections.solana.http.connection, 'ready'),
+        reach(test.connections.tempo.http.connection, 'ready'),
     ]);
-    return { ethereum, solana, ...test };
+    return { ethereum, tempo, ...test };
 }
 
 /**
@@ -70,7 +71,7 @@ const watchingWith = (machine: RunningMachine, view: string) =>
 describe('latest proof requests machine', () => {
     test('follows new requests and their batches being committed', async () => {
         const requests = createRequests();
-        const { solana, connections, close } = await setUp(requests, 32);
+        const { tempo, connections, close } = await setUp(requests, 32);
         const { latestProofRequests, close: closeView } =
             createLatestProofRequestsMachine(
                 connections,
@@ -85,7 +86,7 @@ describe('latest proof requests machine', () => {
             '38:unprocessed,36:unprocessed,34:unprocessed,32:unprocessed'
         );
 
-        await solana.setBatches(batchesUpTo(40));
+        await tempo.setBatches(batchesUpTo(40));
         await watchingWith(
             latestProofRequests,
             '38:batch9,36:batch9,34:batch8,32:batch8'
@@ -151,7 +152,7 @@ describe('latest proof requests machine', () => {
         );
         expect(describeView(waiting.data)).toBe('38:batch9,36:batch9');
         expect(waiting.data).toEqual(
-            expect.objectContaining({ waitingOn: ['ethereum', 'solana'] })
+            expect.objectContaining({ waitingOn: ['ethereum', 'tempo'] })
         );
         network$.next('online');
         await watchingWith(latestProofRequests, '38:batch9,36:batch9');

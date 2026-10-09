@@ -1,0 +1,50 @@
+{
+    "name": "@nori-zk/tempo-zk-utils",
+    "version": "0.0.1",
+    "description": "tempo-zk-utils supporting Nori Bridge on Tempo",
+    "author": "Nori",
+    "license": "Apache-2.0",
+    "keywords": [
+        "nori",
+        "tempo",
+        "sp1",
+        "proof-queue"
+    ],
+    "publishConfig": {
+        "registry": "https://registry.npmjs.org/",
+        "access": "public"
+    },
+    "type": "module",
+    "main": "build/index.js",
+    "types": "build/index.d.ts",
+    "exports": {
+        ".": {
+            "import": "./build/index.js"
+        }
+    },
+    "scripts": {
+        "clean": "rimraf build",
+        "build": "npm run clean && tsc",
+        "buildw": "tsc --watch",
+        "format": "prettier --check --ignore-unknown **/*",
+        "format:fix": "prettier --write --ignore-unknown **/*",
+        "test": "node --experimental-vm-modules ../node_modules/jest/bin/jest.js --runInBand --forceExit",
+        "test-ci": "npm run test",
+        "lint": "npx eslint src",
+        "lint:fix": "npx eslint src --fix"
+    },
+    "dependencies": {
+        "@nori-zk/pts-types": "7.0.2"
+    },
+    "devDependencies": {
+        "@nori-zk/proof-conversion": "^0.8.16",
+        "@types/jest": "^30.0.0",
+        "jest": "^30.2.0",
+        "rimraf": "^6.1.2",
+        "ts-jest": "^29.4.6",
+        "typescript": "^5.9.3"
+    },
+    "files": [
+        "build/"
+    ]
+}

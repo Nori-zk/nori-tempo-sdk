@@ -1,6 +1,7 @@
 import { task } from "hardhat/config";
 import "../logger.js";
 import { Logger } from "esm-iso-logger";
+import { WEI_PER_BRIDGE_UNIT } from "../contracts/NoriTokenBridge.const.js";
 
 const logger = new Logger("GetTotalDeposited");
 
@@ -54,7 +55,6 @@ export const getTotalDeposited = task(
 
       const valueFromMapping = await tokenBridge.lockedTokens(codeChallenge);
 
-      const WEI_PER_BRIDGE_UNIT = 10n ** 12n;
       const weiValue = valueFromMapping * WEI_PER_BRIDGE_UNIT;
       logger.log(`WEI: ${weiValue.toString()}`);
       logger.log(`BU: ${valueFromMapping.toString()}`);

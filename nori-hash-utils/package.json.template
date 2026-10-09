@@ -1,5 +1,5 @@
 {
-    "name": "@nori-zk/ethereum-solana-proof-queue-utils-glam",
+    "name": "@nori-zk/ethereum-tempo-proof-queue-utils-glam",
     "type": "module",
     "version": "0.0.1",
     "license": "Apache-2.0",

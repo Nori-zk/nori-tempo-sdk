@@ -4,10 +4,12 @@ import {
     type ProofRequestHistoryEntry,
 } from '../../proofRequest/fetchProofRequestHistory.js';
 import { createProofRequestHistoryMachine } from '../../proofRequest/proofRequestHistory.impl.js';
+import { connectedReadClientsOf } from '../../proofRequest/connectedRead.js';
 import {
+    BRIDGE_ADDRESS,
     createContiguousBatches,
     createFakeEthereumProvider,
-    createFakeSolanaRpc,
+    createFakeTempoProvider,
     createTestConnections,
     FAST_TIMINGS,
     QUEUE_ADDRESS,
@@ -17,7 +19,7 @@ import {
     type FakeProofRequest,
 } from '../testUtils.js';
 
-const addresses = { proofQueueAddress: QUEUE_ADDRESS };
+const addresses = { proofQueueAddress: QUEUE_ADDRESS, bridgeAddress: BRIDGE_ADDRESS };
 
 /** 40 requests three blocks apart from block 100; target A enqueued the even ids. */
 function createRequests(): FakeProofRequest[] {
@@ -47,21 +49,20 @@ async function setUp(queueCursor = 16) {
     const ethereum = createFakeEthereumProvider(createRequests(), {
         latestBlock: 400,
     });
-    const solana = await createFakeSolanaRpc(batchesUpTo(queueCursor));
-    const test = createTestConnections(ethereum.provider, solana.rpc);
+    const tempo = createFakeTempoProvider(batchesUpTo(queueCursor));
+    const test = createTestConnections(ethereum.provider, tempo.provider);
     await Promise.all([
         reach(test.connections.ethereum.http.connection, 'ready'),
-        reach(test.connections.solana.http.connection, 'ready'),
+        reach(test.connections.tempo.http.connection, 'ready'),
     ]);
-    return { ethereum, solana, ...test };
+    return { ethereum, tempo, ...test };
 }
 
 describe('proof request history reads', () => {
     test('a page classifies each request against the committed batches', async () => {
-        const { ethereum, solana, close } = await setUp();
+        const { connections, close } = await setUp();
         const page = await fetchProofRequestHistoryPage(
-            ethereum.provider,
-            solana.rpc,
+            connectedReadClientsOf(connections, 'logs'),
             addresses,
             { target: TARGET_A, fromBlock: 0, order: 'asc', pageSize: 10 }
         );
@@ -92,9 +93,9 @@ describe('proof request history reads', () => {
     });
 
     test('counts proven and unprocessed requests per submitting address', async () => {
-        const { ethereum, solana, close } = await setUp();
+        const { connections, close } = await setUp();
         expect(
-            await fetchProofRequestCountsByTarget(ethereum.provider, solana.rpc, addresses, {
+            await fetchProofRequestCountsByTarget(connectedReadClientsOf(connections, 'logs'), addresses, {
                 target: TARGET_A,
                 fromBlock: 0,
             })
@@ -156,7 +157,7 @@ describe('proof request history machine', () => {
             'waitingForConnection'
         );
         expect(waiting.data).toEqual(
-            expect.objectContaining({ waitingOn: ['ethereum', 'solana'] })
+            expect.objectContaining({ waitingOn: ['ethereum', 'tempo'] })
         );
         network$.next('online');
         const second = await reach(proofRequestHistory, 'waitingForMore');
@@ -197,10 +198,10 @@ describe('proof request history machine', () => {
     }, 60_000);
 
     test('a read whose connection turns out to be down waits for it, then resumes', async () => {
-        const { solana, connections, world, solanaReadFailures, close } =
+        const { tempo, connections, world, tempoReadFailures, close } =
             await setUp();
-        world.solanaGoesDownOnReadFailure = true;
-        solana.state.failNextReads = Infinity;
+        world.tempoGoesDownOnReadFailure = true;
+        tempo.state.failNextReads = Infinity;
         const { proofRequestHistory } = createProofRequestHistoryMachine(
             connections,
             addresses,
@@ -212,11 +213,11 @@ describe('proof request history machine', () => {
             'waitingForConnection'
         );
         expect(waiting.data).toEqual(
-            expect.objectContaining({ waitingOn: ['solana'] })
+            expect.objectContaining({ waitingOn: ['tempo'] })
         );
-        expect(solanaReadFailures.count).toBe(1);
-        world.solanaAnswers = true;
-        solana.state.failNextReads = 0;
+        expect(tempoReadFailures.count).toBe(1);
+        world.tempoAnswers = true;
+        tempo.state.failNextReads = 0;
         await reach(proofRequestHistory, 'waitingForMore');
         close();
     }, 60_000);

@@ -5,7 +5,7 @@ import type { ProofRequestHistoryCursor } from '../rpc/eth/fetchProofRequestsByT
 
 /**
  * Pages through a submitting address's proof requests, reading through the
- * Ethereum provider and Solana RPC connectivity machines. Nothing is a dead
+ * Ethereum and Tempo connectivity machines. Nothing is a dead
  * end: lost connections are waited for and failures retry themselves.
  *
  * - `loadingPage` reads one page from `cursor`. The read's outcomes race on

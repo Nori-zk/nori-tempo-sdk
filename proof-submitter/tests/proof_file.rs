@@ -1,15 +1,14 @@
 //! Host-side tests: proof JSON loading, chain-continuity of the example
-//! series, loader error reporting, and `from_env` validation. No validator
+//! series, loader error reporting, and `from_env` validation. No node
 //! required.
 
 use {
     alloy_primitives::B256,
     nori_sp1_helios_primitives::types::ProofOutputs,
     proof_submitter::{
-        load_update_proof, load_update_proofs_dir, LoadedProof, ProofFileError,
-        SolanaProofSubmitter,
+        load_update_proof, load_update_proofs_dir, proof_file::SP1_GROTH16_PROOF_LEN, LoadedProof,
+        ProofFileError, TempoProofSubmitter,
     },
-    sp1_solana::SP1_GROTH16_PROOF_LEN,
 };
 
 const PROOFS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/example-proofs");
@@ -20,7 +19,7 @@ fn load_proofs() -> Vec<LoadedProof> {
 }
 
 fn outputs(proof: &LoadedProof) -> ProofOutputs {
-    ProofOutputs::from_bytes(&proof.wire.sp1_public_inputs).expect("public values decode")
+    proof.outputs().expect("public values decode")
 }
 
 #[test]
@@ -46,6 +45,24 @@ fn example_proofs_load_and_chain() {
     assert!(proofs
         .iter()
         .all(|p| p.program_vkey == proofs[0].program_vkey));
+}
+
+#[test]
+fn example_proofs_drain_no_requests() {
+    // The integration test data is made against a proof request queue that
+    // accepts no requests, so every cursor is 0.
+    for proof in load_proofs() {
+        let out = outputs(&proof);
+        assert_eq!(out.input_queue_cursor, 0);
+        assert_eq!(out.output_queue_cursor, 0);
+    }
+}
+
+#[test]
+fn example_proofs_are_made_for_the_nori_elf_vkey() {
+    for proof in load_proofs() {
+        assert_eq!(proof.program_vkey, nori_elf::NORI_SP1_HELIOS_PROGRAM_VK);
+    }
 }
 
 #[test]
@@ -80,24 +97,23 @@ fn load_update_proof_reports_bad_files() {
 }
 
 #[test]
-fn from_env_requires_url_and_payer() {
-    let url = std::env::var("SOLANA_RPC_NETWORK_URL").ok();
-    let payer = std::env::var("SOLANA_PAYER_KEYPAIR_PATH").ok();
-    std::env::remove_var("SOLANA_RPC_NETWORK_URL");
-    std::env::remove_var("SOLANA_PAYER_KEYPAIR_PATH");
-    assert!(SolanaProofSubmitter::from_env().is_err());
+fn from_env_requires_url_key_and_bridge() {
+    let url = std::env::var("TEMPO_RPC_NETWORK_URL").ok();
+    let key = std::env::var("TEMPO_PRIVATE_KEY").ok();
+    let bridge = std::env::var("NORI_TEMPO_TOKEN_BRIDGE_ADDRESS").ok();
+    std::env::remove_var("TEMPO_RPC_NETWORK_URL");
+    std::env::remove_var("TEMPO_PRIVATE_KEY");
+    std::env::remove_var("NORI_TEMPO_TOKEN_BRIDGE_ADDRESS");
+    assert!(TempoProofSubmitter::from_env().is_err());
 
-    std::env::set_var("SOLANA_RPC_NETWORK_URL", "http://localhost:8899");
-    assert!(SolanaProofSubmitter::from_env().is_err());
+    std::env::set_var("TEMPO_RPC_NETWORK_URL", "http://127.0.0.1:8545");
+    assert!(TempoProofSubmitter::from_env().is_err());
 
-    match (url, payer) {
-        (Some(u), Some(p)) => {
-            std::env::set_var("SOLANA_RPC_NETWORK_URL", u);
-            std::env::set_var("SOLANA_PAYER_KEYPAIR_PATH", p);
-        }
-        _ => {
-            std::env::remove_var("SOLANA_RPC_NETWORK_URL");
-            std::env::remove_var("SOLANA_PAYER_KEYPAIR_PATH");
-        }
-    }
+    let restore = |name: &str, value: Option<String>| match value {
+        Some(value) => std::env::set_var(name, value),
+        None => std::env::remove_var(name),
+    };
+    restore("TEMPO_RPC_NETWORK_URL", url);
+    restore("TEMPO_PRIVATE_KEY", key);
+    restore("NORI_TEMPO_TOKEN_BRIDGE_ADDRESS", bridge);
 }

@@ -1,5 +1,5 @@
 import { type Block, type Log, toQuantity } from 'ethers';
-import { type EthereumProvider } from '@nori-zk/ethereum-solana-bridge/iso-provider';
+import { type EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
 import { type Observable } from 'rxjs';
 import { type EthereumSubscriptionSocket } from '../connection/connections.js';
 

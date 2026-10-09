@@ -1,0 +1,8 @@
+{
+  "lib/sp1-contracts": {
+    "tag": {
+      "name": "v6.1.1",
+      "rev": "2ac7311ccc5b400dc7773727ec0d15eb9ff1cfa0"
+    }
+  }
+}

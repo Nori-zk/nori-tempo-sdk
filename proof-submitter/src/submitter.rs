@@ -1,361 +1,337 @@
-//! Builds and submits `update` transactions for the Nori Solana token bridge.
+//! Builds and submits `update` transactions for the Nori Tempo token bridge,
+//! and deploys the bridge.
 //!
 //! Interface mirrors the bridge head's other destination-chain submitters:
-//! construct from env ([`SolanaProofSubmitter::from_env`]), then call
-//! [`SolanaProofSubmitter::submit_update`] per proof batch.
+//! construct from env ([`TempoProofSubmitter::from_env`]), then call
+//! [`TempoProofSubmitter::submit_update`] per proof batch.
 
-use anchor_lang::{
-    prelude::Pubkey, solana_program::instruction::Instruction, solana_program::system_program,
-    InstructionData, ToAccountMetas,
+use alloy::{
+    network::EthereumWallet,
+    primitives::{keccak256, Address, Bytes, B256},
+    providers::{Provider, ProviderBuilder},
+    rpc::types::TransactionReceipt,
+    signers::local::PrivateKeySigner,
 };
-use solana_compute_budget_interface::ComputeBudgetInstruction;
-use solana_keypair::Keypair;
-use solana_loader_v3_interface::{instruction as loader_v3, state::UpgradeableLoaderState};
-use solana_message::{Message, VersionedMessage};
-use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_signature::Signature;
-use solana_signer::Signer;
-use solana_transaction::versioned::VersionedTransaction;
-use solana_transaction_status_client_types::{
-    option_serializer::OptionSerializer, UiTransactionEncoding,
+use std::{str::FromStr, sync::RwLock};
+
+use crate::bridge::{
+    ITIP20Factory,
+    NoriTempoTokenBridge::{self, BridgeState, NoriTempoTokenBridgeErrors},
+    SP1Verifier, ITIP20, PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
 };
-use sp1_solana::SP1Groth16Proof;
-use std::str::FromStr;
+use crate::proof_file::UpdateProof;
 
-/// Groth16 verification is the dominant cost; cap the budget so the
-/// transaction is never CU-starved (unused units are not charged). Measured
-/// at ~103.4k CU per update (surfpool e2e, 2026-09); 200k is ~2x margin.
-const UPDATE_COMPUTE_UNIT_LIMIT: u32 = 200_000;
-
-/// Program bytes are written one chunk per transaction; sized so a write
-/// plus its accounts fits a legacy transaction (same ballpark the CLI uses).
-const BUFFER_WRITE_CHUNK_LEN: usize = 1_012;
+/// The bridged token: symbol nETH, currency ETH, so it is not a fee token.
+const TOKEN_NAME: &str = "nETH";
+const TOKEN_SYMBOL: &str = "nETH";
+const TOKEN_CURRENCY: &str = "ETH";
 
 /// Minimal result; mirrors the mock shape from the bridge-head side so
 /// call sites can swap implementations.
 #[derive(Debug, Clone)]
-pub struct SolanaTransactionResult {
-    /// Transaction signature.
+pub struct TempoTransactionResult {
+    /// Transaction hash.
     pub tx_hash: String,
-    /// Compute units the transaction consumed (best-effort fetch from the
-    /// confirmed transaction's meta; `None` when the RPC doesn't serve it).
-    pub cu_consumed: Option<u64>,
+    /// Gas the transaction used, from its receipt.
+    pub gas_used: Option<u64>,
+}
+
+/// The contracts [`TempoProofSubmitter::deploy_contract`] deployed or used.
+#[derive(Debug, Clone)]
+pub struct DeployedTempoBridge {
+    /// The SP1 Groth16 verifier the bridge verifies with.
+    pub verifier: Address,
+    /// The bridged TIP-20, created through `TIP20Factory`.
+    pub token: Address,
+    /// The `NoriTempoTokenBridge`, holding `ISSUER_ROLE` on the token.
+    pub bridge: Address,
+    /// The block the bridge was deployed in.
+    pub bridge_deploy_block: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum SubmitterError {
     #[error("env: {0}")]
     Env(#[from] std::env::VarError),
-    #[error("invalid NORI_SOL_TOKEN_PROGRAM_ID: {0}")]
-    ProgramId(String),
-    #[error("failed to read payer keypair from {path}: {reason}")]
-    KeypairRead { path: String, reason: String },
-    #[error("payer keypair has wrong length ({0} bytes, expected 64)")]
-    KeypairLength(usize),
-    #[error("transaction build failed: {0}")]
-    TransactionBuild(String),
+    #[error("invalid TEMPO_RPC_NETWORK_URL: {0}")]
+    RpcUrl(String),
+    #[error("invalid TEMPO_PRIVATE_KEY: {0}")]
+    PrivateKey(String),
+    #[error("invalid NORI_TEMPO_TOKEN_BRIDGE_ADDRESS: {0}")]
+    BridgeAddress(String),
+    #[error("bridge rejected the call: {0:?}")]
+    BridgeRevert(NoriTempoTokenBridgeErrors),
+    #[error("contract call: {0}")]
+    Contract(alloy::contract::Error),
     #[error("rpc: {0}")]
-    Rpc(#[from] solana_rpc_client_api::client_error::Error),
-    #[error("bridge state account data is {len} bytes, expected at least {expected}")]
-    StateAccountData { len: usize, expected: usize },
+    Rpc(#[from] alloy::transports::TransportError),
+    #[error("waiting for the transaction: {0}")]
+    PendingTransaction(#[from] alloy::providers::PendingTransactionError),
+    #[error("transaction {tx_hash} reverted")]
+    Reverted { tx_hash: String },
+    #[error("{what} transaction {tx_hash} has no contract address in its receipt")]
+    MissingContractAddress { what: &'static str, tx_hash: String },
 }
 
-pub struct SolanaProofSubmitter {
+impl From<alloy::contract::Error> for SubmitterError {
+    /// A revert carrying one of the bridge's errors decodes to it; anything
+    /// else is kept as the contract call error.
+    fn from(error: alloy::contract::Error) -> Self {
+        match error.as_decoded_interface_error::<NoriTempoTokenBridgeErrors>() {
+            Some(decoded) => Self::BridgeRevert(decoded),
+            None => Self::Contract(error),
+        }
+    }
+}
+
+pub struct TempoProofSubmitter {
     rpc_url: String,
-    payer: Keypair,
-    program_id: Pubkey,
+    signer: PrivateKeySigner,
+    bridge_address: RwLock<Address>,
 }
 
-impl SolanaProofSubmitter {
+impl TempoProofSubmitter {
     /// Env:
-    /// * `SOLANA_RPC_NETWORK_URL` (required)
-    /// * `SOLANA_PAYER_KEYPAIR_PATH` (required) — JSON-array keypair file (Solana CLI `id.json` format)
-    /// * `NORI_SOL_TOKEN_PROGRAM_ID` (optional — defaults to the program's declared id)
+    /// * `TEMPO_RPC_NETWORK_URL` (required)
+    /// * `TEMPO_PRIVATE_KEY` (required): the sender, holding a fee token balance
+    /// * `NORI_TEMPO_TOKEN_BRIDGE_ADDRESS` (required): the deployed `NoriTempoTokenBridge`
     pub fn from_env() -> Result<Self, SubmitterError> {
         dotenvy::dotenv().ok();
-        let rpc_url = std::env::var("SOLANA_RPC_NETWORK_URL")?;
-        let payer = read_keypair_file(&std::env::var("SOLANA_PAYER_KEYPAIR_PATH")?)?;
-        let program_id = match std::env::var("NORI_SOL_TOKEN_PROGRAM_ID") {
-            Ok(raw) => Pubkey::from_str(&raw).map_err(|_| SubmitterError::ProgramId(raw))?,
-            Err(_) => token::id(),
-        };
-        Ok(Self {
-            rpc_url,
-            payer,
-            program_id,
-        })
+        let rpc_url = std::env::var("TEMPO_RPC_NETWORK_URL")?;
+        let signer = read_private_key(&std::env::var("TEMPO_PRIVATE_KEY")?)?;
+        let raw_bridge = std::env::var("NORI_TEMPO_TOKEN_BRIDGE_ADDRESS")?;
+        let bridge_address = Address::from_str(&raw_bridge)
+            .map_err(|_| SubmitterError::BridgeAddress(raw_bridge))?;
+        Ok(Self::new(rpc_url, signer, bridge_address))
     }
 
-    pub fn new(rpc_url: String, payer: Keypair, program_id: Pubkey) -> Self {
+    pub fn new(rpc_url: String, signer: PrivateKeySigner, bridge_address: Address) -> Self {
         Self {
             rpc_url,
-            payer,
-            program_id,
+            signer,
+            bridge_address: RwLock::new(bridge_address),
         }
     }
 
-    pub fn payer_pubkey(&self) -> Pubkey {
-        self.payer.pubkey()
+    pub fn sender_address(&self) -> Address {
+        self.signer.address()
     }
 
-    pub fn program_id(&self) -> Pubkey {
-        self.program_id
+    /// The bridge this submitter updates; [`Self::deploy_contract`] points it
+    /// at the bridge it deploys.
+    pub fn bridge_address(&self) -> Address {
+        *self
+            .bridge_address
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn rpc_url(&self) -> &str {
         &self.rpc_url
     }
 
-    /// Bridge state PDA (`[b"STATE"]`), created by `initialize`.
-    pub fn state_address(&self) -> Pubkey {
-        Pubkey::find_program_address(
-            &[token::constants::NORI_SOL_TOKEN_BRIDGE_STATE_SEED],
-            &self.program_id,
-        )
-        .0
+    /// A provider over the configured RPC that signs with the sender.
+    fn provider(&self) -> Result<impl Provider, SubmitterError> {
+        let url = self
+            .rpc_url
+            .parse()
+            .map_err(|_| SubmitterError::RpcUrl(self.rpc_url.clone()))?;
+        Ok(ProviderBuilder::new()
+            .wallet(EthereumWallet::from(self.signer.clone()))
+            .connect_http(url))
     }
 
-    /// Bridged token mint PDA (`[b"NETH"]`), created by `initialize`.
-    pub fn mint_address(&self) -> Pubkey {
-        Pubkey::find_program_address(
-            &[token::constants::NORI_SOL_TOKEN_BRIDGE_SEED],
-            &self.program_id,
-        )
-        .0
+    /// Read the bridge's whole state: head, store hash, queue cursor and
+    /// proof queue batch count among it.
+    pub async fn fetch_state(&self) -> Result<BridgeState, SubmitterError> {
+        let provider = self.provider()?;
+        let bridge = NoriTempoTokenBridge::new(self.bridge_address(), &provider);
+        Ok(bridge.state().call().await?)
     }
 
-    /// The `initialize` instruction (one-off bridge setup; see DEPLOYMENT.md).
-    pub fn build_initialize_instruction(
-        &self,
-        init_values: token::state::NoriSolTokenBridgeInit,
-    ) -> Instruction {
-        Instruction::new_with_bytes(
-            self.program_id,
-            &token::instruction::Initialize { init_values }.data(),
-            token::accounts::Initialize {
-                payer: self.payer.pubkey(),
-                token: self.mint_address(),
-                state: self.state_address(),
-                system_program: system_program::ID,
-                token_program: anchor_spl::token::ID,
-            }
-            .to_account_metas(None),
-        )
-    }
-
-    /// The `update` instruction: payer, state PDA, the proof queue batch PDA
-    /// for `proof_queue_batch_count` (the next index; the program only
-    /// creates it when the proof's batch drained at least one request) and
-    /// the system program, plus a compute budget raise, as a two-instruction
-    /// message payload.
-    pub fn build_update_instructions(
-        &self,
-        proof: &SP1Groth16Proof,
-        proof_queue_batch_count: u64,
-    ) -> Vec<Instruction> {
-        let (proof_queue_batch, _bump) = Pubkey::find_program_address(
-            &[
-                token::constants::NORI_SOL_TOKEN_BRIDGE_PROOF_QUEUE_BATCH_SEED,
-                &proof_queue_batch_count.to_le_bytes(),
-            ],
-            &self.program_id,
-        );
-        let update = Instruction::new_with_bytes(
-            self.program_id,
-            &token::instruction::Update {
-                proof: proof.clone().into(),
-            }
-            .data(),
-            token::accounts::Update {
-                payer: self.payer.pubkey(),
-                state: self.state_address(),
-                proof_queue_batch,
-                system_program: system_program::ID,
-            }
-            .to_account_metas(None),
-        );
-        vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(UPDATE_COMPUTE_UNIT_LIMIT),
-            update,
-        ]
-    }
-
-    /// Submit the one-off `initialize` transaction that creates the bridge
-    /// state PDA and the token mint (see DEPLOYMENT.md §6). Must land before
-    /// any `update`; the init values come from the first proof's public
-    /// values — see [`crate::LoadedProof::bridge_init`].
-    pub async fn submit_initialize(
-        &self,
-        init_values: token::state::NoriSolTokenBridgeInit,
-    ) -> Result<SolanaTransactionResult, SubmitterError> {
-        let instructions = vec![self.build_initialize_instruction(init_values)];
-        self.send_instructions_with_signers(instructions, &[], "initialize")
-            .await
-    }
-
-    /// Submit one proof batch as an `update` transaction. Reads the bridge
-    /// state first for the next proof queue batch index; if another update
-    /// lands in between, the program's continuity checks reject this one.
+    /// Submit one proof batch as an `update` transaction and wait for its
+    /// receipt. If another update lands first, the contract's continuity
+    /// checks reject this one.
     pub async fn submit_update(
         &self,
-        proof: &SP1Groth16Proof,
-    ) -> Result<SolanaTransactionResult, SubmitterError> {
-        let proof_queue_batch_count = self.fetch_proof_queue_batch_count().await?;
-        let instructions = self.build_update_instructions(proof, proof_queue_batch_count);
-        self.send_instructions_with_signers(instructions, &[], "update")
-            .await
+        proof: &UpdateProof,
+    ) -> Result<TempoTransactionResult, SubmitterError> {
+        let provider = self.provider()?;
+        let bridge = NoriTempoTokenBridge::new(self.bridge_address(), &provider);
+        let receipt = bridge
+            .update(
+                Bytes::from(proof.proof.clone()),
+                Bytes::from(proof.sp1_public_inputs.clone()),
+            )
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        self.transaction_result(&receipt, "update")
     }
 
-    /// Read `proof_queue_batch_count` from the bridge state account.
-    async fn fetch_proof_queue_batch_count(&self) -> Result<u64, SubmitterError> {
-        let client = RpcClient::new(self.rpc_url.clone());
-        let account = client.get_account(&self.state_address()).await?;
-        // 8-byte Anchor discriminator, then the zero-copy state struct.
-        let expected = 8 + std::mem::size_of::<token::state::NoriSolTokenBridge>();
-        let data = account
-            .data
-            .get(8..expected)
-            .ok_or(SubmitterError::StateAccountData {
-                len: account.data.len(),
-                expected,
-            })?;
-        let state: token::state::NoriSolTokenBridge = bytemuck::pod_read_unaligned(data);
-        Ok(state.proof_queue_batch_count)
-    }
-
-    /// Deploy a compiled program (raw `.so` bytes) to the configured RPC via
-    /// the upgradeable loader: create buffer → write chunks → deploy. The
-    /// payer covers fees and rent and becomes the upgrade authority; the
-    /// program lands at `program_keypair`'s address.
-    ///
-    /// Dev/test convenience. Production deploys should use the Solana CLI
-    /// (DEPLOYMENT.md §5): it batches writes in parallel and resumes
-    /// interrupted uploads; this implementation is sequential and does not
-    /// resume — a failure mid-write abandons the (recoverable) buffer.
-    pub async fn deploy_program(
+    /// Deploy the bridge and its token, in order: the sp1-contracts v6.1.0
+    /// Groth16 verifier unless `verifier` is given, the nETH TIP-20 through
+    /// `TIP20Factory` with the sender as admin and pathUSD as its quote token,
+    /// the `NoriTempoTokenBridge`, then `ISSUER_ROLE` on the token for the
+    /// bridge. The bridge starts at head 0 and cursor 0; its first `update`
+    /// is any proof whose input store hash is `store_hash`. This submitter
+    /// then updates the deployed bridge.
+    pub async fn deploy_contract(
         &self,
-        program_keypair: &Keypair,
-        program_data: &[u8],
-    ) -> Result<SolanaTransactionResult, SubmitterError> {
-        let client = RpcClient::new(self.rpc_url.clone());
-        let payer = self.payer.pubkey();
-
-        let buffer = Keypair::new();
-        let buffer_lamports = client
-            .get_minimum_balance_for_rent_exemption(UpgradeableLoaderState::size_of_buffer(
-                program_data.len(),
-            ))
+        store_hash: B256,
+        eth_token_bridge_address: Address,
+        eth_proof_queue_address: Address,
+        nori_bridge_vk: B256,
+        verifier: Option<Address>,
+    ) -> Result<DeployedTempoBridge, SubmitterError> {
+        let verifier = match verifier {
+            Some(verifier) => verifier,
+            None => self.deploy_verifier().await?,
+        };
+        let token = self.create_token().await?;
+        let (bridge, bridge_deploy_block) = self
+            .deploy_bridge(
+                verifier,
+                token,
+                nori_bridge_vk,
+                store_hash,
+                eth_token_bridge_address,
+                eth_proof_queue_address,
+            )
             .await?;
-        let create = loader_v3::create_buffer(
-            &payer,
-            &buffer.pubkey(),
-            &payer,
-            buffer_lamports,
-            program_data.len(),
-        )
-        .map_err(|e| SubmitterError::TransactionBuild(e.to_string()))?;
-        self.send_instructions_with_signers(create, &[&buffer], "buffer create")
-            .await?;
-
-        // Fire the chunk writes without per-transaction confirmation
-        // (hundreds of txs), then confirm the last one — the batching
-        // strategy the Solana CLI uses. Local and RPC endpoints process
-        // these in order; the final confirm proves the whole batch landed.
-        let blockhash = client.get_latest_blockhash().await?;
-        let mut last_signature = None;
-        for (index, chunk) in program_data.chunks(BUFFER_WRITE_CHUNK_LEN).enumerate() {
-            let write = loader_v3::write(
-                &buffer.pubkey(),
-                &payer,
-                (index * BUFFER_WRITE_CHUNK_LEN) as u32,
-                chunk.to_vec(),
-            );
-            let msg = Message::new_with_blockhash(&[write], Some(&payer), &blockhash);
-            let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&self.payer])
-                .map_err(|e| SubmitterError::TransactionBuild(e.to_string()))?;
-            last_signature = Some(client.send_transaction(&tx).await?);
-        }
-        if let Some(signature) = last_signature {
-            client.confirm_transaction(&signature).await?;
-        }
-
-        let program_lamports = client
-            .get_minimum_balance_for_rent_exemption(UpgradeableLoaderState::size_of_program())
-            .await?;
-        let deploy = loader_v3::deploy_with_max_program_len(
-            &payer,
-            &program_keypair.pubkey(),
-            &buffer.pubkey(),
-            &payer,
-            program_lamports,
-            program_data.len() * 2,
-        )
-        .map_err(|e| SubmitterError::TransactionBuild(e.to_string()))?;
-        self.send_instructions_with_signers(deploy, &[program_keypair], "program deploy")
-            .await
+        self.grant_issuer_role(token, bridge).await?;
+        *self
+            .bridge_address
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = bridge;
+        Ok(DeployedTempoBridge {
+            verifier,
+            token,
+            bridge,
+            bridge_deploy_block,
+        })
     }
 
-    /// Shared send path: blockhash, sign with the payer plus any extra
-    /// signers, send and confirm.
-    async fn send_instructions_with_signers(
-        &self,
-        instructions: Vec<Instruction>,
-        extra_signers: &[&Keypair],
-        what: &str,
-    ) -> Result<SolanaTransactionResult, SubmitterError> {
-        let client = RpcClient::new(self.rpc_url.clone());
-        let blockhash = client.get_latest_blockhash().await?;
-        let msg =
-            Message::new_with_blockhash(&instructions, Some(&self.payer.pubkey()), &blockhash);
-        let mut signers: Vec<&Keypair> = vec![&self.payer];
-        signers.extend_from_slice(extra_signers);
-        let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers)
-            .map_err(|e| SubmitterError::TransactionBuild(e.to_string()))?;
-        let signature = client.send_and_confirm_transaction(&tx).await?;
-        let cu_consumed = fetch_cu_consumed(&client, &signature).await;
-        log::info!(
-            "submitted Nori {what} tx {} through {} ({} CU)",
-            signature,
-            self.rpc_url,
-            cu_consumed
-                .map(|cu| cu.to_string())
-                .unwrap_or_else(|| "?".into())
+    /// Deploy the sp1-contracts v6.1.0 Groth16 `SP1Verifier`.
+    pub async fn deploy_verifier(&self) -> Result<Address, SubmitterError> {
+        let provider = self.provider()?;
+        let receipt = SP1Verifier::deploy_builder(&provider)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        self.transaction_result(&receipt, "SP1Verifier deploy")?;
+        contract_address(&receipt, "SP1Verifier deploy")
+    }
+
+    /// Create the nETH TIP-20 through `TIP20Factory`, with the sender as
+    /// admin and pathUSD as its quote token. The salt is the hash of the
+    /// sender and its nonce, so each call creates a new token.
+    pub async fn create_token(&self) -> Result<Address, SubmitterError> {
+        let provider = self.provider()?;
+        let sender = self.sender_address();
+        let nonce = provider.get_transaction_count(sender).await?;
+        let salt = keccak256([sender.as_slice(), &nonce.to_be_bytes()].concat());
+        let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, &provider);
+        let create = factory.createToken(
+            TOKEN_NAME.to_string(),
+            TOKEN_SYMBOL.to_string(),
+            TOKEN_CURRENCY.to_string(),
+            PATH_USD_ADDRESS,
+            sender,
+            salt,
         );
-        Ok(SolanaTransactionResult {
-            tx_hash: signature.to_string(),
-            cu_consumed,
+        let token = create.call().await?;
+        let receipt = create.send().await?.get_receipt().await?;
+        self.transaction_result(&receipt, "TIP-20 create")?;
+        Ok(token)
+    }
+
+    /// Deploy the `NoriTempoTokenBridge`, returning its address and the
+    /// block it was deployed in.
+    pub async fn deploy_bridge(
+        &self,
+        verifier: Address,
+        token: Address,
+        nori_bridge_vk: B256,
+        store_hash: B256,
+        eth_token_bridge_address: Address,
+        eth_proof_queue_address: Address,
+    ) -> Result<(Address, u64), SubmitterError> {
+        let provider = self.provider()?;
+        let receipt = NoriTempoTokenBridge::deploy_builder(
+            &provider,
+            verifier,
+            nori_bridge_vk,
+            token,
+            store_hash,
+            eth_token_bridge_address,
+            eth_proof_queue_address,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+        self.transaction_result(&receipt, "NoriTempoTokenBridge deploy")?;
+        let bridge = contract_address(&receipt, "NoriTempoTokenBridge deploy")?;
+        Ok((bridge, receipt.block_number.unwrap_or_default()))
+    }
+
+    /// Grant `bridge` the token's `ISSUER_ROLE`, so only it mints.
+    pub async fn grant_issuer_role(
+        &self,
+        token: Address,
+        bridge: Address,
+    ) -> Result<TempoTransactionResult, SubmitterError> {
+        let provider = self.provider()?;
+        let receipt = ITIP20::new(token, &provider)
+            .grantRole(keccak256("ISSUER_ROLE"), bridge)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        self.transaction_result(&receipt, "ISSUER_ROLE grant")
+    }
+
+    /// Shared receipt check: a reverted transaction is an error, a
+    /// successful one is logged with its gas.
+    fn transaction_result(
+        &self,
+        receipt: &TransactionReceipt,
+        what: &str,
+    ) -> Result<TempoTransactionResult, SubmitterError> {
+        let tx_hash = receipt.transaction_hash.to_string();
+        if !receipt.status() {
+            return Err(SubmitterError::Reverted { tx_hash });
+        }
+        log::info!(
+            "submitted Nori {what} tx {} through {} ({} gas)",
+            tx_hash,
+            self.rpc_url,
+            receipt.gas_used
+        );
+        Ok(TempoTransactionResult {
+            tx_hash,
+            gas_used: Some(receipt.gas_used),
         })
     }
 }
 
-/// Fetch the compute units a confirmed transaction consumed. Best-effort:
-/// returns `None` if the meta is unavailable or the RPC errors.
-async fn fetch_cu_consumed(client: &RpcClient, signature: &Signature) -> Option<u64> {
-    let tx = client
-        .get_transaction(signature, UiTransactionEncoding::Json)
-        .await
-        .ok()?;
-    match tx.transaction.meta?.compute_units_consumed {
-        OptionSerializer::Some(cu) => Some(cu),
-        _ => None,
-    }
+/// The contract a deploy transaction created.
+fn contract_address(
+    receipt: &TransactionReceipt,
+    what: &'static str,
+) -> Result<Address, SubmitterError> {
+    receipt
+        .contract_address
+        .ok_or_else(|| SubmitterError::MissingContractAddress {
+            what,
+            tx_hash: receipt.transaction_hash.to_string(),
+        })
 }
 
-/// Solana CLI keypair file: a JSON array of 64 bytes.
-pub fn read_keypair_file(path: &str) -> Result<Keypair, SubmitterError> {
-    let text = std::fs::read_to_string(path).map_err(|e| SubmitterError::KeypairRead {
-        path: path.to_string(),
-        reason: e.to_string(),
-    })?;
-    let bytes: Vec<u8> = serde_json::from_str(&text).map_err(|e| SubmitterError::KeypairRead {
-        path: path.to_string(),
-        reason: format!("expected a JSON array of 64 bytes: {e}"),
-    })?;
-    if bytes.len() != 64 {
-        return Err(SubmitterError::KeypairLength(bytes.len()));
-    }
-    Keypair::try_from(&bytes[..]).map_err(|e| SubmitterError::KeypairRead {
-        path: path.to_string(),
-        reason: e.to_string(),
-    })
+/// A hex private key, with or without its `0x` prefix.
+pub fn read_private_key(raw: &str) -> Result<PrivateKeySigner, SubmitterError> {
+    PrivateKeySigner::from_str(raw.trim()).map_err(|e| SubmitterError::PrivateKey(e.to_string()))
 }

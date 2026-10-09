@@ -9,7 +9,7 @@ export {
     type EthereumOrder,
     type EthereumSubscriptionSocket,
     type Nori,
-    type Solana,
+    type Tempo,
 } from '../rpc/connection/connections.js';
 export {
     ConnectionNotReadyError,
@@ -43,15 +43,15 @@ export {
 } from '../rpc/eth/ethereumWallet.js';
 export { type EthereumHealth } from '../rpc/eth/ethereumHttp.js';
 export {
-    PUBLIC_SOLANA_CLUSTERS,
-    type SolanaCluster,
-    type SolanaHealth,
-    type SolanaRpc,
-} from '../rpc/solana/solanaHttp.js';
+    PUBLIC_TEMPO_NETWORKS,
+    tempoWebsocketUrlOf,
+    type TempoNetwork,
+    type TempoNetworkEndpoints,
+} from '../rpc/tempo/tempoNetworks.js';
 export { DEFAULT_NORI_WEBSOCKET_URL } from '../rpc/nori/noriWebsocket.js';
 export {
     requestErrorCode,
     USER_REJECTED_REQUEST,
     type Eip1193EventProvider,
 } from '../rpc/eth/eip1193.js';
-export type { EthereumProvider } from '@nori-zk/ethereum-solana-bridge/iso-provider';
+export type { EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';

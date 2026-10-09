@@ -1,13 +1,15 @@
-/** The most proof requests one job settles; the rest wait for the jobs after it. */
-export const MAX_BATCH_SIZE = 2 ** 16;
+import { MAX_BATCH } from '@nori-zk/tempo-token-bridge';
+
+/** The most proof requests one job settles (the bridge's `MAX_BATCH`); the rest wait for the jobs after it. */
+export const MAX_BATCH_SIZE = MAX_BATCH;
 
 /** Seconds between Ethereum finality transitions: one epoch of 32 slots of 12 seconds. */
 export const ETHEREUM_EPOCH_SEC = 384;
 
 /**
  * The stages of one job that Nori's timings measure, in the order the job
- * goes through them: proving it, then submitting it to Solana. The job is
- * committed on Solana when it leaves the last one
+ * goes through them: proving it, then submitting it to Tempo. The job is
+ * committed on Tempo when it leaves the last one
  * (`EthProcessorTransactionFinalizationSucceeded`).
  */
 export const NORI_JOB_STAGES = [
@@ -25,13 +27,13 @@ export type NoriJobTimings = Record<NoriJobStage, number>;
 
 /**
  * Rule-of-thumb seconds for each job stage, used while Nori's timings are
- * unknown: a proof takes about two minutes, and submitting it to Solana and
- * its finalization take seconds.
+ * unknown: a proof takes about two minutes, and submitting it to Tempo takes
+ * about a second, after which it is final.
  */
 export const FALLBACK_NORI_JOB_TIMINGS: NoriJobTimings = {
     BridgeHeadJobCreated: 120,
     BridgeHeadJobSucceeded: 1,
-    EthProcessorTransactionSubmitting: 13,
+    EthProcessorTransactionSubmitting: 1,
     EthProcessorTransactionSubmitSucceeded: 1,
 };
 
@@ -41,7 +43,7 @@ export interface NoriStage {
     elapsed_sec: number;
 }
 
-/** When the next commits on Solana are due, in seconds from now. */
+/** When the next commits on Tempo are due, in seconds from now. */
 export interface CommitTimes {
     /** Until the job Nori is running now is committed; `undefined` while no job is running. */
     currentJobSec: number | undefined;
@@ -69,7 +71,7 @@ export function jobTimingsOf(timings?: Partial<Record<string, number>>): NoriJob
 
 /**
  * When the job Nori is running now, and the job after it, are committed on
- * Solana. A job is created on an Ethereum finality transition, one epoch
+ * Tempo. A job is created on an Ethereum finality transition, one epoch
  * after the last, or straight after the job before it when that one overran.
  * Between its commit and the next job, Nori is idle. A negative time means
  * the step is taking longer than expected.

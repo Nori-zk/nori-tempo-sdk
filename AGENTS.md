@@ -2,16 +2,18 @@
 
 ## What this repo is
 
-SDK + on-chain code for the Nori Ethereum→Solana token bridge:
+SDK + on-chain code for the Nori Ethereum→Tempo token bridge:
 
-- Users lock ETH in `NoriTokenBridge.sol`; each lock enqueues a storage-proof
-  request on `NoriProofRequestQueue.sol`.
+- Users lock ETH and ERC-20s in `NoriTokenBridge.sol`; each lock, and each
+  `syncPause` of an ERC-20's pause state, enqueues a storage-proof request on
+  `NoriProofRequestQueue.sol`.
 - [nori-bridge-head](https://github.com/Nori-zk/nori-bridge-head) (Helios
   light client + SP1) proves Ethereum consensus/execution state and folds
   pending deposits into a Merkle root.
-- The Solana program (`programs/token`) verifies SP1 Groth16 proofs via
-  [sp1-solana](https://github.com/Nori-zk/sp1-solana) and mints SPL tokens
-  against proven deposits.
+- The Tempo contract (`tempo/contracts/NoriTempoTokenBridge.sol`) verifies
+  SP1 Groth16 proofs with sp1-contracts' v6.1.0 verifier and mints a TIP-20
+  against proven deposits: nETH for ETH, and one TIP-20 mirror per ERC-20,
+  paused and unpaused with its ERC-20.
 
 The `ethereum/` contracts take the Nori bridge's Ethereum-side design as a
 baseline, scoped down for this route: one-way, lock only, no unlock path.
@@ -21,55 +23,58 @@ baseline, scoped down for this route: one-way, lock only, no unlock path.
 | Path | Contents |
 | --- | --- |
 | `ethereum/contracts/` | `NoriTokenBridge.sol`, `NoriProofRequestQueue.sol`, `TimeLockController.sol` (vanilla OZ, for deploys) |
-| `ethereum/tasks/` | Hardhat tasks: deploy, deployTimelock, lockTokens, fee admin, previews |
+| `ethereum/tasks/` | Hardhat tasks: deploy, deployTimelock, lockTokens, lockERC20, syncPause, fee admin (incl. withdrawTokenFees), previews, fundFromHolder (local forks) |
 | `ethereum/test/` | Mocha tests (run via Hardhat); `test-vectors/` holds storage-layout vectors shared with the SP1 guest |
-| `ethereum/types/ethers-contracts/` | **Generated** by `hardhat compile`; committed after `stabilize-types.mjs` sorts unstable lines. Never hand-edit |
-| `programs/token/` | Anchor program: `initialize`, `update`, `mint` + zero-copy state and append-only proof queue batch PDAs |
-| `proof-submitter/` | Client crate: proof-JSON loader + `SolanaProofSubmitter` (RPC `update` sender) |
-| `cli/` | `nori-cli` operator binary on top of `proof-submitter`: `initialize` for an already deployed program (DEPLOYMENT.md §6) |
-| `idl/`, `sdk/src/program/` | **Generated** from `programs/token` by `anchor idl build` and Codama (sdk/README.md "How to regenerate the Solana client"). Never hand-edit; regenerate with the program change |
+| `ethereum/test-fork/` | ERC-20 tests on real mainnet USDC/WETH on the `mainnetFork` network (`npm run test:fork`); out of `test/` because they need a mainnet RPC |
+| `ethereum/scripts/` | `erc20-fork-check.sh` (`npm run test:erc20-fork-flow`): every ERC-20 task through its npm script on a local fork |
+| `ethereum/types/ethers-contracts/`, `tempo/types/ethers-contracts/` | **Generated** by `hardhat compile`; committed after `stabilize-types.mjs` sorts unstable lines. Never hand-edit |
+| `tempo/contracts/` | `NoriTempoTokenBridge.sol`, `interfaces/ITIP20.sol`, `interfaces/ITIP20Factory.sol` |
+| `tempo/lib/` | **Gitignored**: sp1-contracts cloned by `npm run lib` at the tag in `tempo/foundry.lock`; Hardhat compiles its `v6.1.0` verifier |
+| `tempo/tasks/deploy.ts` | Deploy: verifier (unless given), nETH TIP-20 via `TIP20Factory`, bridge, `ISSUER_ROLE` |
+| `tempo/tasks/registerMirror.ts` | `npm run register-mirror`: the deployer creates an ERC-20's TIP-20 mirror (DEPLOYMENT.md §5) |
+| `tempo/test/` | Hardhat suite on `anvil --network tempo`; integration test data in `test_examples/`, `proofs/`, indexed by `constructExampleProofs.ts`; vendored `test-vectors/` |
+| `tempo-zk-utils/` | Integrity program vkey, proof decoding, first example proof, vendored vectors |
+| `proof-submitter/` | Rust client crate: alloy bindings from the Tempo artifacts, proof-JSON loader, `TempoProofSubmitter` (deploy + `update` sender) |
+| `cli/` | `nori-cli` operator binary on top of `proof-submitter`: `deploy` (DEPLOYMENT.md §5) |
+| `sdk/src/program/` | Re-exports `@nori-zk/tempo-token-bridge` (the contracts' ethers types) as the sdk's `./program` entry |
 | `nori-hash-utils/` | Workspace crate compiling nori-bridge-head's `nori-hash` (without its default `helios` feature) to WebAssembly with `wasm-bindgen` + `tsify`; `pkg/` is build output |
-| `test-utils/` | Surfpool test harness (validator kill-on-drop, funded keypairs, CLI deploy incl. at a given program id, `set_account`/`time_travel` cheatcodes, `send` with compute units and logs, custom error codes); no dependency on `token` or Anchor, so the program's own tests and apps built on it can use it |
-| `proof-submitter/example-proofs/` | Four chained SP1 Groth16 proofs (no deposits) used by the test suites |
-| `DEPLOYMENT.md` | Production runbook (Safe → Timelock → ETH contracts → Solana program) |
-| `DEVELOPMENT_GUIDE.md` | Toolchain setup (Solana CLI, Anchor, Surfpool) |
+| `test-utils/` | anvil harness (node with kill-on-drop on a free port, dev signers, `set_storage_at`/`time_travel` cheatcodes); no dependency on the contracts, so apps built on the bridge can use it |
+| `proof-submitter/example-proofs/` | Integration test data: four chained SP1 Groth16 proofs (no deposits) used by the Rust suites |
+| `DEPLOYMENT.md` | Production runbook (Safe → Timelock → ETH contracts → Tempo contracts) |
+| `DEVELOPMENT_GUIDE.md` | Toolchain setup (Rust, Node, Foundry), the local Tempo node, contracts build and test |
 
 ## Commands that work today
 
 ```bash
-cd ethereum
 npm ci
-npm test                    # ETH_NETWORK=hardhat hardhat test → 126 passing
-npm run typecheck           # tsc --noEmit → clean
-npm run build               # compile + stabilize-types + tsc -p tsconfig.package.json
+npm run build -w tempo-zk-utils
+npm run build -w tempo        # npm run lib + compile + stabilize-types + tsc
+npm run build -w sdk
+npm run test -w tempo-zk-utils
+anvil --network tempo &       # then:
+npm run test -w tempo         # 44 passing
+npm run test -w ethereum      # 126 passing
+npm run test:fork -w ethereum # 8 passing: ERC-20 locking and pause sync on real mainnet USDC/WETH (local fork, needs network)
+npm run test:erc20-fork-flow -w ethereum  # every ERC-20 task through its npm script on a local fork: "All steps passed"
+npm run test:unit -w sdk
+npm run test:integration -w sdk  # mint, mintERC20 and applyPause through the sdk on its own anvil mainnet fork + anvil --network tempo (needs network)
+npm run lint -w sdk
 
-cd ..   # repo root
-CFLAGS="-isystem $HOME/.cache/solana/v1.54/platform-tools/llvm/sbpf/include" \
-    cargo build-sbf --manifest-path programs/token/Cargo.toml   # → target/deploy/token.so
-cargo test                # surfpool suites (needs surfpool + solana CLI on PATH)
-cargo run -p nori-cli -- initialize --help   # one-off initialize of a deployed program
-cargo clippy --workspace --all-targets   # clean
-cargo fmt --all --check                  # clean
+cargo test                    # Rust suites (needs anvil on PATH and tempo/ artifacts)
+cargo run -p nori-cli -- deploy --help
 ```
 
-## Build quirks that cost hours
+## Build quirks
 
-- **Alloy MSRV**: the SBF toolchain ships rustc 1.89; alloy 1.7+ requires
-  1.91. Cargo.lock pins the alloy tree to 1.6.3 (MSRV 1.88). Do not
-  `cargo update` the alloy crates past that without an SBF toolchain bump.
-- **Helios feature**: nori-bridge-head's helios 0.12.0 depends on alloy 2.x,
-  which requires rustc 1.94.1. The root `Cargo.toml` takes
-  `nori-sp1-helios-primitives` and `nori-hash` with `default-features = false`,
-  leaving out their `helios` feature, so neither helios nor alloy 2.x enters
-  the lock. Keep it that way without an SBF toolchain bump.
-- **getrandom 0.2** (via rand_core ← k256/bls12_381) has no backend cfg for
-  the sbpf target; `programs/token/Cargo.toml` forces its `custom` feature,
-  which unifies across the graph. Nothing on-chain calls getrandom.
-- **ring** (via ethereum_hashing ← tree_hash) compiles C with the platform
-  clang and needs the freestanding headers passed via `CFLAGS` (above).
-- The stack analyzer in `cargo build-sbf` prints "Error: Function …
-  overflows the maximum allowed frame space" for dead third-party code
-  (ring::rsa, crossbeam). Only frames in `token::*` matter.
+- `proof-submitter` generates its alloy bindings from `tempo/artifacts/`:
+  build `tempo/` before `cargo build`.
+- sp1-contracts tag `v6.1.0` ships a broken Groth16 verifier; `foundry.lock`
+  pins tag `v6.1.1`, whose `contracts/src/v6.1.0` is the correct one.
+- Hardhat emits artifacts only for files under `paths.sources.solidity`, so
+  `hardhat.config.ts` adds `./lib/sp1-contracts/contracts/src/v6.1.0`. Its
+  Plonk verifier is also named `SP1Verifier`: always use the fully
+  qualified `lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierGroth16.sol:SP1Verifier`.
+- TIP-20 `hasRole` takes the account first: `hasRole(address,bytes32)`.
 
 ## Invariants that bite if broken
 
@@ -80,40 +85,71 @@ cargo fmt --all --check                  # clean
 - The storage-slot indices in `test/NoriProofRequestQueue.ts` are mirrored in
   the SP1 guest (`nori-primitives` in nori-bridge-head). Changing them
   invalidates previously generated proofs.
-- 1 bridge unit = 10¹² wei on the Ethereum side (`DECIMALS = 6`).
-  `MAX_MAGNITUDE = 2⁶⁴−1` BU keeps the Solana-side `u64` mint conversion
-  sound — do not raise `DECIMALS` or drop the cap.
-- The bridge pins `proofQueue` as an immutable with no setter; the Solana
-  side pins the same two addresses at `initialize`. Both sides move together
-  or not at all.
-- `NoriSolTokenBridge` is a **zero-copy** account (`AccountLoader`, 192
-  bytes + 8-byte discriminator): the struct must stay `Pod` — fixed-size
-  fields only, ordered so there is no padding, no Borsh/Vec.
-- `update`'s state account must stay `mut` — `load_mut()` rejects read-only
-  accounts with `AccountNotMutable`. `mint`'s stays read-only so mints do
-  not write-lock state against `update`.
-- Proof queue batches are append-only PDAs at
-  `[b"PROOF_QUEUE_BATCH", index.to_le_bytes()]`, created only by `update`
-  and only for non-empty batches, with contiguous indices from 0
-  (`proof_queue_batch_count`). Never overwrite or close them: `mint` trusts
-  any program-owned `ProofRequestRootEntry` as a committed batch.
-- Create program-owned PDAs only through `pda::create_program_owned_pda`:
-  their addresses are predictable, and a bare `create_account` fails
-  forever once someone pre-funds the address.
-- Serialize into account data with `try_serialize(&mut &mut data[..])`,
-  never `&mut *data` — the latter advances the account's stored slice, so
-  later reads in the same instruction see empty data.
+- 1 bridge unit = 10¹² wei on the Ethereum side (`DECIMALS = 6`), the same
+  as a TIP-20's 6 decimals. `MAX_MAGNITUDE = 2⁶⁴−1` BU keeps the Tempo-side
+  `uint64` mint amounts sound — do not raise `DECIMALS` or drop the cap.
+- The bridge pins `proofQueue` as an immutable with no setter; the Tempo
+  bridge pins the same two addresses as immutables at deploy. Both sides move
+  together or not at all.
+- `NoriTempoTokenBridge`'s storage layout (documented in its State section)
+  is what the tests plant batches into with `anvil_setStorageAt`; reordering
+  its state variables changes it.
+- Proof queue batches are append-only, created only by `update` and only for
+  non-empty batches, with contiguous indices from 0 (`proofQueueBatchCount`).
+  `findProofQueueBatch`'s binary search relies on their cursor ranges
+  increasing.
+- ERC-20 storage in `NoriTokenBridge.sol` is appended after the fee state:
+  slot 6 `lockedERC20`, 7 `totalLockedERC20BU`, 8 `pauseState`, 9
+  `accumulatedTokenFees` (`LOCKED_ERC20_SLOT_INDEX`, `PAUSE_STATE_SLOT_INDEX`,
+  pinned by the fork tests). New state goes after them, never above.
+- `NoriTempoTokenBridge` appends slot 5 `mirrorOf`, 6 `erc20MintedSoFar`, 7
+  `_pauseAppliedPlusOne` after `mintedSoFar`; the planted-batch layout above
+  them is unchanged.
+- Leaves are told apart by their collection keys, never by their slot: an ETH
+  deposit has one key, an ERC-20 deposit `[codeChallenge, token]`, a pause
+  state `[PAUSE_KEY, token]` with value 1 or 2. `lockERC20` refuses
+  `PAUSE_KEY` as a codeChallenge and `mint` requires one key; keep both, or a
+  deposit could pass for a pause or mint the wrong token.
+- `applyPause` accepts only a batch newer than the last one applied for the
+  token: a batch's proof read the pause state at its own Ethereum block.
+- The mirror admin (`registerMirror`) is the Tempo bridge's deployer, an
+  immutable; mirrors are created with the bridge as their admin.
+- `PAUSE_KEY` is `keccak256("NORI_PAUSE_STATE")` on both chains and in both
+  `const.ts` files (computed with `id`, never pasted); the tests compare them
+  with the contracts.
+
+## Integration test data
+
+- The example proofs (`proof-submitter/example-proofs/`,
+  `tempo/test/test_examples/<input slot>/sp1Proof.json`,
+  `tempo/test/proofs/sp1Proof.json`, and the first one in
+  `tempo-zk-utils/src/test-examples/sp1-mpt-proof/`) are integration test
+  data: CI runs the bridge head for four cycles against an Ethereum
+  `NoriProofRequestQueue` that accepts no locks or proof requests. Every
+  example proof therefore drains no requests: its input and output queue
+  cursors are 0, by definition. Tests that need requests or committed
+  batches plant them on top (`anvil_setStorageAt`), never in the proofs.
+- The bridge starts at head 0 and cursor 0. Tests and test-mode deploys
+  take the start store hash and the queue address by decoding the first
+  example proof (`decodeConsensusMptProof`,
+  `extractEthProofQueueAddressFromSP1Proof` from `@nori-zk/tempo-zk-utils`;
+  `LoadedProof::outputs()` in Rust).
+- `tempo/test/constructExampleProofs.ts` indexes the example proofs
+  (`buildExampleProofCreateArgument`, `buildExampleProofSeriesCreateArguments`);
+  keep it, the `test_examples/` folders and `proofs/` in this layout, since
+  CI rewrites them.
 
 ## Conventions
 
 - Docs and comments must not reference the chain this SDK was forked from;
-  describe the ETH→Solana design as it stands.
-- Run `npm test` in `ethereum/` after any contract change; regenerate types
-  via `npm run build` and commit the stabilized output.
-- `.env.nori-eth-token-bridge` / `.env.nori-eth-timelock` are gitignored
-  deploy outputs; the `.example` files are the committed templates.
+  describe the ETH→Tempo design as it stands.
+- Run the `ethereum/` and `tempo/` suites after any contract change;
+  regenerate types via `npm run build` and commit the stabilized output.
+- `.env.nori-eth-token-bridge` / `.env.nori-eth-timelock` /
+  `.env.nori-tempo-token-bridge` are gitignored deploy outputs; the
+  `.example` files are the committed templates.
 - Keep README.md, DEPLOYMENT.md, and this file in sync with code changes.
-- Changing and releasing the sdk (`@nori-zk/nori-bridge-solana-sdk`), in this order:
+- Changing and releasing the sdk (`@nori-zk/nori-bridge-tempo-sdk`), in this order:
     1. Collect everything the apps need from it first, so one release covers it.
     2. Explain each change and why, and ask. Change nothing until the user says yes.
     3. Make the changes, bump the version (`package.json`, `sdk/package.json`, `package-lock.json`), and run its build, lint and unit tests.

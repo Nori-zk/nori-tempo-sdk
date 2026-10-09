@@ -38,6 +38,10 @@ import { deployTimelock } from "./tasks/deployTimelock.js";
 import { setProofRequestQueueFee } from "./tasks/setProofRequestQueueFee.js";
 import { withdrawProofRequestQueueFees } from "./tasks/withdrawProofRequestQueueFees.js";
 import { previewFees } from "./tasks/previewFees.js";
+import { lockERC20 } from "./tasks/lockERC20.js";
+import { syncPause } from "./tasks/syncPause.js";
+import { withdrawTokenFees } from "./tasks/withdrawTokenFees.js";
+import { fundFromHolder } from "./tasks/fundFromHolder.js";
 
 const possibleNetworkName = process.env.ETH_NETWORK;
 const possibleRpcUrl = process.env.ETH_RPC_URL;
@@ -62,13 +66,22 @@ if (issues.length) {
 
 const networkName = possibleNetworkName as string;
 
-interface NetworkConfig {
-  url: string;
-  accounts: string[];
-  type: "http";
-}
+// Public, non-archive: forks at a recent block work, pinned old blocks do not.
+const DEFAULT_MAINNET_FORK_RPC_URL = "https://ethereum-rpc.publicnode.com";
 
-const networks: Record<string, NetworkConfig> = {};
+const networks: NonNullable<HardhatUserConfig["networks"]> = {
+  // Simulated network forked from Ethereum mainnet, for test-fork/ and node:fork
+  mainnetFork: {
+    type: "edr-simulated",
+    chainType: "l1",
+    forking: {
+      url: process.env.ETH_MAINNET_FORK_RPC_URL || DEFAULT_MAINNET_FORK_RPC_URL,
+      ...(process.env.ETH_MAINNET_FORK_BLOCK && {
+        blockNumber: BigInt(process.env.ETH_MAINNET_FORK_BLOCK),
+      }),
+    },
+  },
+};
 
 if (networkName !== "hardhat") {
   networks[networkName] = {
@@ -82,7 +95,7 @@ logger.log(`Running on network "${networkName}"`);
 if (networkName === "hardhat") {
   logger.log("Using built-in Hardhat network for local testing.");
 } else {
-  logger.log(`Using RPC URL: ${networks[networkName].url}`);
+  logger.log(`Using RPC URL: ${possibleRpcUrl}`);
   logger.log("One private key loaded for deployment.");
 }
 
@@ -124,6 +137,10 @@ const config: HardhatUserConfig = {
     setProofRequestQueueFee,
     withdrawProofRequestQueueFees,
     previewFees,
+    lockERC20,
+    syncPause,
+    withdrawTokenFees,
+    fundFromHolder,
   ],
   plugins: [
     hardhatMocha,

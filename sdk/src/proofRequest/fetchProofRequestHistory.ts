@@ -1,11 +1,5 @@
-import {
-    type GetAccountInfoApi,
-    type GetMultipleAccountsApi,
-    type Rpc,
-} from '@solana/kit';
-import { type EthereumProvider } from '@nori-zk/ethereum-solana-bridge/iso-provider';
-import { TOKEN_PROGRAM_ADDRESS } from '../program/programs/token.js';
 import { classifyProofRequests } from './classifyProofRequests.js';
+import { type ConnectedReadClients } from './connectedRead.js';
 import {
     type ProofRequestStateSnapshot,
     type ProofRequestStateSnapshotRequest,
@@ -17,7 +11,7 @@ import {
     type ProofRequestHistoryCursor,
     type ProofRequestsByTargetQuery,
 } from '../rpc/eth/fetchProofRequestsByTarget.js';
-import { fetchBridgeState } from '../rpc/solana/fetchBridgeState.js';
+import { fetchBridgeState } from '../rpc/tempo/fetchBridgeState.js';
 import { withBackoff } from '../utils/withBackoff.js';
 
 /** The addresses a history read needs: no single enqueuing transaction. */
@@ -26,10 +20,10 @@ export type ProofRequestHistoryRequest = Omit<
     'proofRequestTxHash'
 >;
 
-/** The queue and program addresses a history read needs besides its clients. */
+/** The queue and bridge addresses a history read needs besides its clients. */
 export type ProofRequestHistoryAddresses = Pick<
     ProofRequestHistoryRequest,
-    'proofQueueAddress' | 'programAddress'
+    'proofQueueAddress' | 'bridgeAddress'
 >;
 
 /** A request a submitting address enqueued, with where it is now. */
@@ -57,37 +51,34 @@ const COUNTING_PAGE_SIZE = 1000;
 
 /**
  * Reads one page of a submitting address's proof requests from Ethereum and
- * classifies them against one read of the bridge state on Solana.
+ * classifies them against one read of the bridge state on Tempo.
  *
- * @param provider The Ethereum provider.
- * @param rpc The Solana RPC.
- * @param request The queue and program addresses.
+ * @param clients The runner per chain: Ethereum reads the page, Tempo classifies it.
+ * @param request The queue and bridge addresses.
  * @param query The submitting address, block range, order, page size and cursor.
  * @returns The page's entries, its continuation cursor, and whether the range is exhausted.
- * @throws EthRpcTransportError When an Ethereum read still fails after its retries.
- * @throws SolanaRpcTransportError When a Solana read still fails after its retries.
+ * @throws ConnectionNotReadyError When no transport of a chain could serve its part.
  */
 export async function fetchProofRequestHistoryPage(
-    provider: EthereumProvider,
-    rpc: Rpc<GetAccountInfoApi & GetMultipleAccountsApi>,
+    clients: ConnectedReadClients,
     request: ProofRequestHistoryRequest,
     query: ProofRequestsByTargetQuery
 ): Promise<ProofRequestHistoryPage> {
-    const page = await fetchProofRequestsByTarget(
-        provider,
-        request.proofQueueAddress,
-        query
+    const page = await clients.ethereum((provider) =>
+        fetchProofRequestsByTarget(provider, request.proofQueueAddress, query)
     );
     if (page.requests.length === 0) {
         return { entries: [], cursor: page.cursor, done: page.done };
     }
-    const snapshots = await classifyProofRequests(
-        rpc,
-        page.requests.map((proofRequest) => ({
-            requestId: proofRequest.requestId,
-            requestBlockNumber: BigInt(proofRequest.blockNumber),
-        })),
-        request.programAddress
+    const snapshots = await clients.tempo((provider) =>
+        classifyProofRequests(
+            provider,
+            page.requests.map((proofRequest) => ({
+                requestId: proofRequest.requestId,
+                requestBlockNumber: BigInt(proofRequest.blockNumber),
+            })),
+            request.bridgeAddress
+        )
     );
     return {
         entries: page.requests.map((proofRequest, i) => ({
@@ -104,17 +95,14 @@ export async function fetchProofRequestHistoryPage(
  * many have a proof available: the queue drains in order, so every id below
  * the bridge's queue cursor is proven.
  *
- * @param provider The Ethereum provider.
- * @param rpc The Solana RPC.
- * @param request The queue and program addresses.
+ * @param clients The runner per chain: Ethereum reads the requests, Tempo the bridge's queue cursor.
+ * @param request The queue and bridge addresses.
  * @param query The submitting address and block range.
  * @returns The total, proven and unprocessed counts.
- * @throws EthRpcTransportError When an Ethereum read still fails after its retries.
- * @throws SolanaRpcTransportError When a Solana read still fails after its retries.
+ * @throws ConnectionNotReadyError When no transport of a chain could serve its part.
  */
 export async function fetchProofRequestCountsByTarget(
-    provider: EthereumProvider,
-    rpc: Rpc<GetAccountInfoApi & GetMultipleAccountsApi>,
+    clients: ConnectedReadClients,
     request: ProofRequestHistoryRequest,
     query: Pick<
         ProofRequestsByTargetQuery,
@@ -124,28 +112,23 @@ export async function fetchProofRequestCountsByTarget(
     // Fixed up front so every page reads the same range.
     const toBlock =
         query.toBlock ??
-        (await withBackoff(() => provider.getBlockNumber()).catch(
-            (error: unknown) => {
-                throw new EthRpcTransportError(
-                    'Failed to read the latest block number.',
-                    error
-                );
-            }
+        (await clients.ethereum((provider) =>
+            withBackoff(() => provider.getBlockNumber()).catch((error: unknown) => {
+                throw new EthRpcTransportError('Failed to read the latest block number.', error);
+            })
         ));
 
     const requestIds: bigint[] = [];
     let after: ProofRequestHistoryCursor | undefined;
     for (;;) {
-        const page = await fetchProofRequestsByTarget(
-            provider,
-            request.proofQueueAddress,
-            {
+        const page = await clients.ethereum((provider) =>
+            fetchProofRequestsByTarget(provider, request.proofQueueAddress, {
                 ...query,
                 toBlock,
                 order: 'asc',
                 pageSize: COUNTING_PAGE_SIZE,
                 after,
-            }
+            })
         );
         requestIds.push(
             ...page.requests.map((proofRequest) => proofRequest.requestId)
@@ -154,9 +137,8 @@ export async function fetchProofRequestCountsByTarget(
         if (page.done) break;
     }
 
-    const { queueCursor } = await fetchBridgeState(
-        rpc,
-        request.programAddress ?? TOKEN_PROGRAM_ADDRESS
+    const { queueCursor } = await clients.tempo((provider) =>
+        fetchBridgeState(provider, request.bridgeAddress)
     );
     const proofAvailable = requestIds.filter(
         (requestId) => requestId < queueCursor

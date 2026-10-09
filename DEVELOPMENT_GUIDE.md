@@ -2,199 +2,234 @@
 
 ## Dependencies
 
-Full install instructions live here: https://solana.com/docs/intro/installation
+Rust (for the proof submitter, the processor and the bridge head), Node.js (for the contracts package and the TypeScript SDK) and Foundry (for the local Tempo node and `cast`).
 
-A single installer sets up Rust, the Solana CLI, Anchor, Surfpool, Node.js, and Yarn together:
+Rust installs through rustup: https://rustup.rs. Node.js installs from https://nodejs.org (version 20 or later).
+
+Foundry installs through `foundryup`, as Tempo's docs describe (https://tempo.xyz/developers/docs/sdk/foundry):
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSfL https://solana-install.solana.workers.dev | bash
+curl -L https://foundry.paradigm.xyz | bash
 ```
 
-This prints its own install/progress output, which varies depending on what is already installed, so no fixed example is shown here.
+*Output ends like this:*
 
-The installer's bin directory needs to be on PATH for the `solana` command to resolve:
+```
+foundryup-init: foundryup was installed successfully!
+foundryup-init: 
+foundryup-init: To get started, add foundryup to your PATH:
+foundryup-init: 
+foundryup-init:   export PATH="$PATH:/home/<user>/.foundry/bin"
+foundryup-init: 
+foundryup-init: Then run 'foundryup' to install Foundry.
+```
+
+Put Foundry's bin directory on PATH, then install Foundry itself:
 
 ```bash
-echo 'export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"' >> ~/.bashrc
+echo 'export PATH="$PATH:$HOME/.foundry/bin"' >> ~/.bashrc
 source ~/.bashrc
+foundryup
 ```
 
-Both commands are silent on success: `echo` here only writes to `~/.bashrc`, and `source` produces no output unless something in `~/.bashrc` prints something.
+*Output ends like this. The version will differ:*
+
+```
+foundryup: use - forge 1.8.5 (51a52c59cf 2026-10-05T17:18:54.332175693Z)
+foundryup: use - cast 1.8.5 (51a52c59cf 2026-10-05T17:18:54.332175693Z)
+foundryup: use - anvil 1.8.5 (51a52c59cf 2026-10-05T17:18:54.332175693Z)
+foundryup: use - chisel 1.8.5 (51a52c59cf 2026-10-05T17:18:54.332175693Z)
+foundryup: use - solar 0.2.0-dev (83214bb 2026-10-05T17:18:44.969371011Z)
+foundryup: done!
+```
 
 Sanity-check that everything landed:
 
 ```bash
-rustc --version && solana --version && anchor --version && surfpool --version && node --version && yarn --version
+rustc --version && node --version && npm --version && anvil --version | head -1 && cast --version | head -1
 ```
 
 *Output looks like this. Exact versions will differ:*
 
 ```
 rustc 1.98.0 (88d9e12ae 2026-08-18)
-solana-cli 3.1.10 (src:7bc9c805; feat:1620780344, client:Agave)
-anchor-cli 1.1.2
-surfpool 1.5.0
 v24.18.0
-1.22.22
+11.16.0
+anvil Version: 1.8.5
+cast Version: 1.8.5
 ```
 
-If any command isn't found, the dependencies doc covers troubleshooting: https://solana.com/docs/intro/installation/dependencies
+## Local Tempo node
 
-## Surfpool
-
-Surfpool is the local validator used for development. It stands in for a real Solana cluster on a local machine, allowing programs to be deployed and tested without touching devnet or mainnet.
+`anvil --network tempo` is the local node used for development and tests. It runs Tempo's protocol locally: the `TIP20Factory` precompile at `0x20Fc000000000000000000000000000000000000`, pathUSD at `0x20C0000000000000000000000000000000000000`, and fees paid in pathUSD. The contracts deploy and the tests run against it without touching Moderato or mainnet.
 
 ### Start
 
-Bring the local validator up:
-
 ```bash
-surfpool start
+anvil --network tempo
 ```
 
-This launches an interactive terminal dashboard (not plain scrollback text) alongside a local web UI and the RPC/WebSocket endpoints programs connect to, so there is no fixed stdout snippet to show here.
+*Output looks like this (the banner and the ten dev accounts' keys are trimmed). The dev accounts and keys are Foundry's well-known test mnemonic, the same every time:*
+
+```
+Available Accounts
+==================
+
+(0) 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 (10000.000000000000000000 ETH)
+(1) 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 (10000.000000000000000000 ETH)
+...
+
+Private Keys
+==================
+
+(0) 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+(1) 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+...
+
+Wallet
+==================
+Mnemonic:          test test test test test test test test test test test junk
+Derivation path:   m/44'/60'/0'/0/
+
+
+Tempo Fee Payer
+==================
+0xa0Ee7A142d267C1f36714E4a8F75612F20a79720
+
+
+Chain ID
+==================
+
+31337
+
+Base Fee
+==================
+
+20000000000
+```
+
+It listens on `http://127.0.0.1:8545`. The ETH balances shown are not what pays fees on Tempo: each dev account also holds pathUSD, which does.
 
 ### Stop
 
-Surfpool runs in the foreground, not as a detached service. Shut it down with Ctrl+C in the terminal where `surfpool start` is running.
+The node runs in the foreground. Shut it down with Ctrl+C in the terminal where it runs.
 
-## Anchor
+### Fork Moderato
 
-Anchor is the framework used to scaffold, build, and deploy Solana programs.
-
-### Create a new program
-
-Scaffold a new project:
+To run against Moderato's state locally (its deployed contracts and balances), fork it:
 
 ```bash
-anchor init first-program
+anvil --network tempo --fork-url https://rpc.moderato.tempo.xyz
 ```
 
-*Output looks like this (a git default-branch-name hint is trimmed):*
+*Its output adds the fork, and the chain id is Moderato's. The block number differs every time:*
 
 ```
-Initialized empty Git repository in /path/to/first-program/.git/
-first-program initialized
+Fork
+==================
+Endpoint:       https://rpc.moderato.tempo.xyz/
+Block number:   38853850
+...
+Chain ID:       42431
 ```
 
-Move into the new project directory. `cd` produces no output on success:
+## cast
+
+`cast` talks to the node from the command line. The commands below run against the local node started above.
+
+### Check the node
 
 ```bash
-cd first-program
+cast chain-id --rpc-url http://127.0.0.1:8545
+cast block-number --rpc-url http://127.0.0.1:8545
 ```
 
-Build the program:
+*Output looks like this. The block number grows as transactions land:*
+
+```
+31337
+105
+```
+
+### Check the fee token balance
+
+Fees are paid in pathUSD. Dev account 0's pathUSD balance:
 
 ```bash
-anchor build
+cast call 0x20C0000000000000000000000000000000000000 'balanceOf(address)(uint256)' 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 --rpc-url http://127.0.0.1:8545
 ```
 
-The first run compiles every dependency, producing a long list of `Compiling X` lines; trimmed here to the final result:
+*Output looks like this:*
 
 ```
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.99s
+18446744073709551615 [1.844e19]
 ```
 
-Deploy it to whichever cluster is configured (a local validator needs to be running first, see Surfpool above). Use `anchor program deploy`, not the deprecated `anchor deploy`, and point it at the built `.so`:
+### Create a TIP-20
+
+The bridged token is a TIP-20 created through `TIP20Factory`, with pathUSD as its quote token and the creator as its admin. This is what the deploy does:
 
 ```bash
-anchor program deploy target/deploy/first_program.so
+cast send 0x20Fc000000000000000000000000000000000000 \
+  'createToken(string,string,string,address,address,bytes32)' \
+  nETH nETH ETH 0x20C0000000000000000000000000000000000000 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
+  0x0000000000000000000000000000000000000000000000000000000000000001 \
+  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  --rpc-url http://127.0.0.1:8545
 ```
 
-*Output looks like this. The program ID differs every time, since it is derived from the generated program keypair:*
+`cast` first warns that `ETH` is not an ISO 4217 currency code: a TIP-20's currency is fixed at creation, and only `USD` tokens can pay fees. The bridged token is not a fee token, so answer `y`. *The rest of the output looks like this (trimmed to the status and gas):*
 
 ```
-Program ID: 5ZZoRpJwyAhY54mcTKcHN24PdfDyQDKc1eE9DWjp7Khy
-Skipping IDL deployment on localnet
+gasUsed              2560758
+status               1 (success)
 ```
 
-## Solana CLI
+The token's address comes from the creator and the salt. Read it without sending first, with the same arguments through `cast call ... 'createToken(...)(address)' ... --from <creator>`.
 
-The Solana CLI manages wallets, configuration, and interaction with a cluster (local or remote).
+### Grant ISSUER_ROLE and mint
 
-### Configure the target cluster
-
-Point the CLI at the local validator:
+A TIP-20's roles are the keccak256 of their names. The admin grants `ISSUER_ROLE`, which the bridge contract holds so it can mint:
 
 ```bash
-solana config set --url localhost
+cast send <token> 'grantRole(bytes32,address)' $(cast keccak ISSUER_ROLE) <account> \
+  --private-key <admin key> --rpc-url http://127.0.0.1:8545
 ```
 
-*Output looks like this: the config file it wrote, the RPC and WebSocket URLs now pointing at the local validator, which keypair the CLI will sign with, and the commitment level used when confirming transactions:*
+*Output includes:*
 
 ```
-Config File: /home/<user>/.config/solana/cli/config.yml
-RPC URL: http://localhost:8899 
-WebSocket URL: ws://localhost:8900/ (computed)
-Keypair Path: /home/<user>/.config/solana/id.json 
-Commitment: confirmed 
+status               1 (success)
 ```
 
-### Generate a keypair
+Only an `ISSUER_ROLE` holder can mint; anyone else's `mint` reverts with `Unauthorized`. A role check takes the account first: `hasRole(address,bytes32)`.
 
-Generate a local dev keypair. This is a throwaway wallet for local testing, funded via airdrop, not a real-funds wallet:
+## Contracts (`tempo/`)
+
+The Tempo contracts are a Hardhat package. Its SP1 verifier comes from Succinct's sp1-contracts, pinned in `tempo/foundry.lock` (tag `v6.1.1`) and cloned into the gitignored `tempo/lib/` by `npm run lib`, which `build` and `test` run first. `tempo/remappings.txt` maps `sp1-contracts/` into it.
+
+### Build
 
 ```bash
-solana-keygen new
+npm run build -w tempo
 ```
 
-*Output looks like this. The actual pubkey and seed phrase will differ each time it runs:*
+*Output includes:*
 
 ```
-Wrote new keypair to /home/<user>/.config/solana/id.json
-======================================================================
-pubkey: Ffw32UiWGknLF4mma7KF1GDoc43ic13aC5dUnPMeBghD
-======================================================================
-Save this seed phrase and your BIP39 passphrase to recover your new keypair:
-<redacted>
+Compiled 7 Solidity files with solc 0.8.28 (evm target: cancun)
 ```
 
-### Check the generated address
+### Test
 
-Print the pubkey of the currently configured keypair. This matches the pubkey shown when the keypair was generated:
+The tests run against the local Tempo node, so start `anvil --network tempo` first, in another terminal. They import `@nori-zk/tempo-zk-utils`, so build it first (`npm run build -w tempo-zk-utils`). They deploy the real verifier, create the bridged token through `TIP20Factory`, deploy the bridge with the store hash and queue address decoded from the first example proof, and verify the example proofs in `tempo/test/test_examples/`:
 
 ```bash
-solana address
+npm run test -w tempo
 ```
 
-*Output looks like this. The pubkey differs every time, matching whatever keypair is currently configured:*
+*Output ends like this:*
 
 ```
-Ffw32UiWGknLF4mma7KF1GDoc43ic13aC5dUnPMeBghD
-```
-
-### Fund and check the balance
-
-Request an airdrop of 2 SOL from the local validator's faucet:
-
-```bash
-solana airdrop 2
-```
-
-*Output looks like this. The signature differs every time, and the final line is the wallet's total balance after the airdrop, not just the 2 SOL just requested:*
-
-```
-Requesting airdrop of 2 SOL
-
-Signature: 27yp71LgE1EQMzhFCgUCgbDLLJcYPHTX9TTbhauD4rrncxt4a6yKjCVcjKSbPEcYSWK3J8ffPwDxxKSmozxgpxbn
-
-10002 SOL
-```
-
-Check the balance directly:
-
-```bash
-solana balance
-```
-
-*Output looks like this. The amount reflects the wallet's current total balance, not just the last airdrop:*
-
-```
-10002 SOL
-```
-
-# Install specific SBF build version
-
-```
-cargo build-sbf --install-only --force-tools-install --tools-version v1.54
+  44 passing (10s)
 ```

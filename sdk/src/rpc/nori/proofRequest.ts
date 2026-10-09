@@ -1,6 +1,6 @@
 /**
  * The stages an unprocessed proof request waits through while the bridge
- * works towards settling it on Solana, as observed from the bridge's
+ * works towards settling it on Tempo, as observed from the bridge's
  * websocket topics.
  *
  * - `WaitingForEthFinality`: The request is awaiting Ethereum chain finality before processing can begin.

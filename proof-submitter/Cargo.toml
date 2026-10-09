@@ -1,34 +1,29 @@
 [package]
 name = "proof-submitter"
-version = "0.1.0"
+version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-token = { workspace = true }
-sp1-solana = { workspace = true }
 nori-sp1-helios-primitives = { workspace = true }
-alloy-primitives = { workspace = true, features = ["borsh"] }
-anchor-lang = { workspace = true }
-anchor-spl = { workspace = true }
-bytemuck = { workspace = true, features = ["derive"] }
+alloy = { workspace = true, features = [
+    "contract",
+    "network",
+    "providers",
+    "reqwest",
+    "rpc-types",
+    "signer-local",
+    "sol-types",
+] }
+alloy-primitives = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = "2"
 dotenvy = { workspace = true }
 log = "0.4"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-solana-rpc-client = { workspace = true }
-solana-rpc-client-api = "3.1"
-solana-keypair = { workspace = true }
-solana-message = { workspace = true }
-solana-signer = { workspace = true }
-solana-transaction = { workspace = true }
-solana-compute-budget-interface = "3.1"
-solana-loader-v3-interface = { version = "6", features = ["bincode"] }
-solana-signature = "3"
-solana-transaction-status-client-types = "3"
 
 [dev-dependencies]
+nori-elf = { workspace = true }
 test-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

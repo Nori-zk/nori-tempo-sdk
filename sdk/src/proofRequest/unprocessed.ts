@@ -13,7 +13,7 @@ export type UnprocessedProofRequestStateData = BridgeState & {
     time_remaining_sec: number;
     proof_request_processing_status: BridgeProofRequestProcessingStatus;
     proof_request_block_number: number;
-    /** Seconds until the batch covering the request is committed on Solana; negative when overdue. */
+    /** Seconds until the batch covering the request is committed on Tempo; negative when overdue. */
     commit_time_remaining_sec: number;
     /** Seconds the request has spent in this node. */
     waiting_elapsed_sec: number;

@@ -1,6 +1,7 @@
 import { task } from "hardhat/config";
 import "../logger.js";
 import { Logger } from "esm-iso-logger";
+import { FEE_DENOMINATOR, WEI_PER_BRIDGE_UNIT } from "../contracts/NoriTokenBridge.const.js";
 
 const logger = new Logger("GetFeeInfo");
 
@@ -42,9 +43,6 @@ export const getFeeInfo = task(
         deployedAddress
       );
 
-      const WEI_PER_BRIDGE_UNIT = 10n ** 12n;
-      const FEE_DENOMINATOR = 100_000n;
-
       const lockFeeRate = await tokenBridge.lockFeeRate();
       const feeRecipient = await tokenBridge.feeRecipient();
       const accumulatedFees = await tokenBridge.accumulatedFees();
@@ -54,7 +52,7 @@ export const getFeeInfo = task(
       logger.log(`Fee recipient: ${feeRecipient}`);
       logger.log(
         `Lock fee rate: ${lockFeeRate} (${(
-          (Number(lockFeeRate) / Number(FEE_DENOMINATOR)) *
+          (Number(lockFeeRate) / FEE_DENOMINATOR) *
           100
         ).toFixed(3)}%)`
       );
@@ -97,7 +95,7 @@ export const getFeeInfo = task(
         `Effective lock fee: ${ethers.formatEther(
           proofRequestQueueFee
         )} ETH + ${(
-          (Number(lockFeeRate) / Number(FEE_DENOMINATOR)) *
+          (Number(lockFeeRate) / FEE_DENOMINATOR) *
           100
         ).toFixed(3)}% of the deposit`
       );

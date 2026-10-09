@@ -1,4 +1,4 @@
-//! WebAssembly bindings for ethereum-solana-proof-queue-utils-glam.
+//! WebAssembly bindings for ethereum-tempo-proof-queue-utils-glam.
 //!
 //! This module provides wasm-bindgen exported functions for use from JavaScript.
 
@@ -32,7 +32,7 @@ pub fn request_batch_root(batch: RequestBatch) -> Result<String, JsError> {
 
 /// Builds the Merkle witness for one request in a proof queue batch from
 /// every request in the batch, in queue order. The witness's `root` must
-/// equal the batch root committed on Solana.
+/// equal the batch root committed on Tempo.
 #[wasm_bindgen]
 pub fn request_witness(input: RequestWitnessInput) -> Result<RequestWitness, JsError> {
     crate::request_witness(&input.leaves, input.index).map_err(|e| JsError::new(&e.to_string()))

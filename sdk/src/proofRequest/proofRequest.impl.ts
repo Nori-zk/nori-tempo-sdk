@@ -11,7 +11,6 @@ import {
     take,
     timer,
 } from 'rxjs';
-import { type Address } from '@solana/kit';
 import { classifyProofRequests } from './classifyProofRequests.js';
 import {
     bothReady$,
@@ -37,8 +36,8 @@ export interface FollowedProofRequest {
     proofQueueAddress: string;
     /** The Ethereum transaction that enqueued the proof request. */
     proofRequestTxHash: string;
-    /** The Nori Solana bridge program address. */
-    programAddress?: Address;
+    /** The Tempo `NoriTempoTokenBridge` address. */
+    bridgeAddress: string;
 }
 
 /** A proof request's state as read: `undefined` while its transaction is not mined. */
@@ -99,11 +98,11 @@ const endsTheWait =
 
 /**
  * Starts following one Ethereum proof request until a committed proof queue
- * batch on Solana covers it, reading through both connections. It checks on
+ * batch on Tempo covers it, reading through both connections. It checks on
  * entry to `undetermined` and `unprocessed`, then every `pollIntervalMs` and
  * on every `recheckTrigger$` emission.
  *
- * @param connections The Ethereum provider and Solana RPC, with their running connectivity machines.
+ * @param connections The Ethereum and Tempo chains, with their running connectivity machines.
  * @param request The transaction that enqueued the request, and the addresses.
  * @param knownSnapshot Where the request is already known to be, to resume
  *   from there; it is looked up from the transaction when omitted.
@@ -135,9 +134,9 @@ export function createProofRequestStateMachine(
     // transaction that is not mined yet is waited for, not a failure.
     const lookup$ = checkDue$.pipe(
         exhaustMap(() =>
-            readThroughConnections$(connections, async ({ provider, rpc }) => {
+            readThroughConnections$(connections, async (clients) => {
                 try {
-                    return await getProofRequestStateSnapshot(provider, rpc, request);
+                    return await getProofRequestStateSnapshot(clients, request);
                 } catch (error) {
                     if (error instanceof ProofRequestTransactionNotMinedError) return undefined;
                     throw error;
@@ -157,11 +156,13 @@ export function createProofRequestStateMachine(
                 exhaustMap(() =>
                     readThroughConnections$(
                         connections,
-                        async ({ rpc }): Promise<ProofRequestStateSnapshot | undefined> => {
-                            const [snapshot] = await classifyProofRequests(
-                                rpc,
-                                [{ requestId, requestBlockNumber }],
-                                request.programAddress
+                        async ({ tempo }): Promise<ProofRequestStateSnapshot | undefined> => {
+                            const [snapshot] = await tempo((provider) =>
+                                classifyProofRequests(
+                                    provider,
+                                    [{ requestId, requestBlockNumber }],
+                                    request.bridgeAddress
+                                )
                             );
                             return snapshot;
                         }

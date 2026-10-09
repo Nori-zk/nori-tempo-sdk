@@ -4,10 +4,13 @@ import { expect } from 'chai';
 import { NoriProofRequestQueue__factory } from '../types/ethers-contracts/index.js';
 import hre from 'hardhat';
 import entryLocationVectors from './test-vectors/proof-request-queue/entry-location-vectors.json' with { type: 'json' };
+import {
+    MAX_COLLECTION_KEYS,
+    MAX_PROOF_REQUEST_QUEUE_FEE,
+    PROOF_REQUEST_QUEUE_FEE_GRANULARITY_WEI,
+} from '../contracts/NoriProofRequestQueue.const.js';
 const { ethers } = await hre.network.getOrCreate();
 
-const PROOF_REQUEST_QUEUE_FEE_GRANULARITY_WEI = 10n ** 12n;
-const MAX_PROOF_REQUEST_QUEUE_FEE = ethers.parseEther('0.05');
 const PROOF_REQUEST_QUEUE_FEE = 200n * PROOF_REQUEST_QUEUE_FEE_GRANULARITY_WEI; // 0.0002 ETH
 
 // Consensus-critical storage layout mirrored by the SP1 guest program.
@@ -150,7 +153,7 @@ describe('NoriProofRequestQueue', () => {
         it('Should expose the consensus-critical constants', async function () {
             const { queue } = await deployQueueFixture();
 
-            expect(await queue.MAX_COLLECTION_KEYS()).to.equal(2);
+            expect(await queue.MAX_COLLECTION_KEYS()).to.equal(MAX_COLLECTION_KEYS);
             expect(await queue.PROOF_REQUEST_QUEUE_FEE_GRANULARITY_WEI()).to.equal(
                 PROOF_REQUEST_QUEUE_FEE_GRANULARITY_WEI
             );

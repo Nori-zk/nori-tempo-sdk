@@ -1,16 +1,16 @@
-# @nori-zk/ethereum-solana-proof-queue-utils-glam
+# @nori-zk/ethereum-tempo-proof-queue-utils-glam
 
-WebAssembly utilities for the Nori Ethereum to Solana bridge's proof queue: request leaf hashing, batch roots and Merkle witnesses.
+WebAssembly utilities for the Nori Ethereum to Tempo bridge's proof queue: request leaf hashing, batch roots and Merkle witnesses.
 
 ## Installation
 
 ```bash
-npm install @nori-zk/ethereum-solana-proof-queue-utils-glam
+npm install @nori-zk/ethereum-tempo-proof-queue-utils-glam
 ```
 
 ## Overview
 
-Every hash in this package is computed by `nori_hash::merkle_sha256_fixed` from nori-bridge-head, the same code the SP1 guest runs to build each proof queue batch's `verified_requests_root`. A witness built here verifies against the batch root the Solana program stores.
+Every hash in this package is computed by `nori_hash::merkle_sha256_fixed` from nori-bridge-head, the same code the SP1 guest runs to build each proof queue batch's `verified_requests_root`. A witness built here verifies against the batch root the Tempo bridge contract stores.
 
 All hashes, addresses, keys and values are 0x-prefixed hex strings.
 
@@ -60,7 +60,7 @@ interface RequestWitnessInput {
 #### `RequestWitness`
 The Merkle witness for one request in a proof queue batch, as 0x-prefixed hex.
 
-- `root`: the batch root; it must equal the root committed on Solana.
+- `root`: the batch root; it must equal the root committed on Tempo.
 - `index`: the request's leaf index in the batch.
 - `leaf`: the request's leaf hash.
 - `path`: the sibling hashes from the leaf up to the root, bottom-up.
@@ -128,7 +128,7 @@ Throws if:
 export function request_witness(input: RequestWitnessInput): RequestWitness;
 ```
 
-Builds the Merkle witness for one request in a proof queue batch from every request in the batch, in queue order. The witness's `root` must equal the batch root committed on Solana.
+Builds the Merkle witness for one request in a proof queue batch from every request in the batch, in queue order. The witness's `root` must equal the batch root committed on Tempo.
 
 **Errors**
 
@@ -155,7 +155,7 @@ Throws if the leaf or a path entry is not a 32-byte hex value.
 ### Building a request's witness
 
 ```typescript
-import { request_witness } from '@nori-zk/ethereum-solana-proof-queue-utils-glam';
+import { request_witness } from '@nori-zk/ethereum-tempo-proof-queue-utils-glam';
 
 // Every request in the batch, in queue order, read from Ethereum
 const leaves = [
@@ -169,13 +169,13 @@ const leaves = [
 
 const witness = request_witness({ leaves, index: 0 });
 
-// witness.root must equal the batch root committed on Solana
+// witness.root must equal the batch root committed on Tempo
 ```
 
 ### Checking a witness
 
 ```typescript
-import { merkle_root_from_path } from '@nori-zk/ethereum-solana-proof-queue-utils-glam';
+import { merkle_root_from_path } from '@nori-zk/ethereum-tempo-proof-queue-utils-glam';
 
 const root = merkle_root_from_path({
   leaf: witness.leaf,

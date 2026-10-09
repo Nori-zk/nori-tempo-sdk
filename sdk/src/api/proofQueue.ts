@@ -1,6 +1,4 @@
-import { type Address } from '@solana/kit';
-import { TOKEN_PROGRAM_ADDRESS } from '../program/programs/token.js';
-import { type Ethereum, forCalls, forLogs, type Solana } from '../rpc/connection/connections.js';
+import { type Ethereum, forCalls, forLogs, type Tempo } from '../rpc/connection/connections.js';
 import {
     type EnqueuedProofRequest,
     type EnqueuedProofRequestsQuery,
@@ -11,20 +9,19 @@ import {
     type ProofRequestBatchEntry,
 } from '../rpc/eth/fetchProofRequestBatch.js';
 import { fetchProofQueueHead as fetchProofQueueHeadFrom } from '../rpc/eth/fetchProofQueueHead.js';
-import { fetchBridgeState as fetchBridgeStateFrom } from '../rpc/solana/fetchBridgeState.js';
-import { fetchProofQueueBatches as fetchProofQueueBatchesFrom } from '../rpc/solana/fetchProofQueueBatches.js';
+import { fetchBridgeState as fetchBridgeStateFrom } from '../rpc/tempo/fetchBridgeState.js';
+import { fetchProofQueueBatches as fetchProofQueueBatchesFrom } from '../rpc/tempo/fetchProofQueueBatches.js';
 import {
     fetchProofQueueBatchSummaries as fetchProofQueueBatchSummariesFrom,
     type ProofQueueBatchSummary,
-} from '../rpc/solana/fetchProofQueueBatchSummaries.js';
+} from '../rpc/tempo/fetchProofQueueBatchSummaries.js';
 import {
     findProofQueueBatch as findProofQueueBatchFrom,
     type FoundProofQueueBatch,
-} from '../rpc/solana/findProofQueueBatch.js';
-import { findProofQueueBatchesForRequests as findProofQueueBatchesForRequestsFrom } from '../rpc/solana/findProofQueueBatchesForRequests.js';
+} from '../rpc/tempo/findProofQueueBatch.js';
+import { findProofQueueBatchesForRequests as findProofQueueBatchesForRequestsFrom } from '../rpc/tempo/findProofQueueBatchesForRequests.js';
 
-export { findProofQueueBatchPda } from '../rpc/solana/findProofQueueBatchPda.js';
-export { ProofQueueBatchSearchError, SolanaAccountMismatchError } from '../rpc/solana/errors.js';
+export { ProofQueueBatchSearchError } from '../rpc/tempo/errors.js';
 export type {
     EnqueuedProofRequest,
     EnqueuedProofRequestsQuery,
@@ -79,7 +76,7 @@ export function getProofRequestBatch(
     previousOutputBlockNumber: number,
     outputBlockNumber: number
 ): Promise<ProofRequestBatchEntry[]> {
-    return forLogs(ethereum, 
+    return forLogs(ethereum,
         fetchProofRequestBatchFrom,
         proofQueueAddress,
         inputQueueCursor,
@@ -90,85 +87,72 @@ export function getProofRequestBatch(
 }
 
 /**
- * The Solana program's state account: queue cursor, batch count, latest proven head and root.
+ * The Tempo bridge's state: queue cursor, batch count, latest proven head and root.
  *
- * @param solana The Solana chain.
- * @param programAddress The program (default: the Nori program).
- * @returns The state account.
+ * @param tempo The Tempo chain.
+ * @param bridgeAddress The `NoriTempoTokenBridge` address.
+ * @returns The bridge's state.
  */
-export async function getBridgeState(solana: Solana, programAddress: Address = TOKEN_PROGRAM_ADDRESS) {
-    return fetchBridgeStateFrom(await solana.http.ready(), programAddress);
+export function getBridgeState(tempo: Tempo, bridgeAddress: string) {
+    return forCalls(tempo, fetchBridgeStateFrom, bridgeAddress);
 }
 
 /**
- * Proof queue batches on Solana, by index.
+ * Proof queue batches on Tempo, by index.
  *
- * @param solana The Solana chain.
+ * @param tempo The Tempo chain.
  * @param indices The batches' indices.
- * @param programAddress The program (default: the Nori program).
+ * @param bridgeAddress The `NoriTempoTokenBridge` address.
  * @returns The batches, in the order asked.
  */
-export async function getProofQueueBatches(
-    solana: Solana,
-    indices: bigint[],
-    programAddress: Address = TOKEN_PROGRAM_ADDRESS
-) {
-    return fetchProofQueueBatchesFrom(await solana.http.ready(), indices, programAddress);
+export function getProofQueueBatches(tempo: Tempo, indices: bigint[], bridgeAddress: string) {
+    return forCalls(tempo, fetchProofQueueBatchesFrom, indices, bridgeAddress);
 }
 
 /**
- * Proof queue batches on Solana, by index, each with the output block of the batch before it.
+ * Proof queue batches on Tempo, by index, each with the output block of the batch before it.
  *
- * @param solana The Solana chain.
+ * @param tempo The Tempo chain.
  * @param indices The batches' indices.
- * @param programAddress The program (default: the Nori program).
+ * @param bridgeAddress The `NoriTempoTokenBridge` address.
  * @returns The batch summaries, in the order asked.
  */
-export async function getProofQueueBatchSummaries(
-    solana: Solana,
+export function getProofQueueBatchSummaries(
+    tempo: Tempo,
     indices: bigint[],
-    programAddress: Address = TOKEN_PROGRAM_ADDRESS
+    bridgeAddress: string
 ): Promise<ProofQueueBatchSummary[]> {
-    return fetchProofQueueBatchSummariesFrom(await solana.http.ready(), indices, programAddress);
+    return forCalls(tempo, fetchProofQueueBatchSummariesFrom, indices, bridgeAddress);
 }
 
 /**
  * The proof queue batch that covers a request.
  *
- * @param solana The Solana chain.
+ * @param tempo The Tempo chain.
  * @param requestId The request's id.
- * @param batchCount How many batches the program holds.
- * @param programAddress The program (default: the Nori program).
+ * @param bridgeAddress The `NoriTempoTokenBridge` address.
  * @returns The batch and its index.
  */
-export async function getProofQueueBatch(
-    solana: Solana,
+export function getProofQueueBatch(
+    tempo: Tempo,
     requestId: bigint,
-    batchCount: bigint,
-    programAddress: Address = TOKEN_PROGRAM_ADDRESS
+    bridgeAddress: string
 ): Promise<FoundProofQueueBatch> {
-    return findProofQueueBatchFrom(await solana.http.ready(), requestId, batchCount, programAddress);
+    return forCalls(tempo, findProofQueueBatchFrom, requestId, bridgeAddress);
 }
 
 /**
  * The proof queue batches that cover several requests.
  *
- * @param solana The Solana chain.
+ * @param tempo The Tempo chain.
  * @param requestIds The requests' ids.
- * @param batchCount How many batches the program holds.
- * @param programAddress The program (default: the Nori program).
+ * @param bridgeAddress The `NoriTempoTokenBridge` address.
  * @returns Each request's batch, by request id.
  */
-export async function getProofQueueBatchesForRequests(
-    solana: Solana,
+export function getProofQueueBatchesForRequests(
+    tempo: Tempo,
     requestIds: bigint[],
-    batchCount: bigint,
-    programAddress: Address = TOKEN_PROGRAM_ADDRESS
+    bridgeAddress: string
 ): Promise<Map<bigint, FoundProofQueueBatch>> {
-    return findProofQueueBatchesForRequestsFrom(
-        await solana.http.ready(),
-        requestIds,
-        batchCount,
-        programAddress
-    );
+    return forCalls(tempo, findProofQueueBatchesForRequestsFrom, requestIds, bridgeAddress);
 }

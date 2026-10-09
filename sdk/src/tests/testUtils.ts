@@ -1,6 +1,5 @@
-import { getBase64Decoder, type Address } from '@solana/kit';
 import { type RunningMachine } from '@yaw-rx/ystate';
-import { getAddress, Log, TransactionReceipt, zeroPadValue } from 'ethers';
+import { getAddress, Log, makeError, TransactionReceipt, zeroPadValue } from 'ethers';
 import {
     BehaviorSubject,
     filter,
@@ -8,25 +7,20 @@ import {
     type Observable,
     Subject,
 } from 'rxjs';
-import { NoriProofRequestQueue__factory } from '@nori-zk/ethereum-solana-bridge';
-import type { EthereumProvider } from '@nori-zk/ethereum-solana-bridge/iso-provider';
-import { getNoriSolTokenBridgeEncoder } from '../program/accounts/noriSolTokenBridge.js';
-import { getProofRequestRootEntryEncoder } from '../program/accounts/proofRequestRootEntry.js';
-import { findStatePda } from '../program/pdas/state.js';
-import { TOKEN_PROGRAM_ADDRESS } from '../program/programs/token.js';
+import { NoriProofRequestQueue__factory } from '@nori-zk/ethereum-tempo-bridge';
+import type { EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
+import { NoriTempoTokenBridge__factory } from '@nori-zk/tempo-token-bridge';
 import { type ProofRequestConnections } from '../proofRequest/connectedRead.js';
-import { findProofQueueBatchPda } from '../rpc/solana/findProofQueueBatchPda.js';
-import { SolanaRpcTransportError } from '../rpc/solana/errors.js';
-import type { SolanaHealth, SolanaRpc } from '../rpc/solana/solanaHttp.js';
 import type { EthereumHealth } from '../rpc/eth/ethereumHttp.js';
 import { httpConnection } from '../rpc/connection/httpConnection.impl.js';
-import { ethereumChain, solanaChain, type SolanaTransports } from '../rpc/connection/connections.js';
+import { ethereumChain } from '../rpc/connection/connections.js';
 
 export const QUEUE_ADDRESS = getAddress('0x' + '11'.repeat(20));
+export const BRIDGE_ADDRESS = getAddress('0x' + '22'.repeat(20));
 export const TARGET_A = getAddress('0x' + 'aa'.repeat(20));
 export const TARGET_B = getAddress('0x' + 'bb'.repeat(20));
 export const EXPECTED_CHAIN_ID = 11155111n;
-export const EXPECTED_GENESIS_HASH = 'expected-genesis-hash';
+export const EXPECTED_TEMPO_CHAIN_ID = 42431n;
 
 /** Health check and retry timings short enough for tests. */
 export const FAST_TIMINGS = {
@@ -239,127 +233,116 @@ export function createContiguousBatches(
 }
 
 /**
- * A Solana RPC serving the bridge state and its proof queue batches as the
- * bridge program owns them. `setBatches` replaces them (and the queue cursor,
+ * A Tempo provider serving the bridge contract's `state()`,
+ * `proofQueueBatches` and `findProofQueueBatch` calls at `BRIDGE_ADDRESS`,
+ * encoded with the contract's own ABI, and reverting with its errors as the
+ * contract does. `setBatches` replaces the batches (and the queue cursor,
  * the last batch's output); `failNextReads` makes the next reads fail as a
  * node that never answers does.
  */
-export async function createFakeSolanaRpc(
-    initialBatches: FakeProofQueueBatch[]
-) {
-    const accounts = new Map<string, Uint8Array>();
-    const base64 = getBase64Decoder();
-    const [statePda] = await findStatePda({
-        programAddress: TOKEN_PROGRAM_ADDRESS,
-    });
-    const state = { failNextReads: 0, multipleAccountsCalls: 0 };
+export function createFakeTempoProvider(initialBatches: FakeProofQueueBatch[]) {
+    const bridge = NoriTempoTokenBridge__factory.createInterface();
+    const state = { failNextReads: 0, calls: 0 };
+    let batches: FakeProofQueueBatch[] = initialBatches;
 
-    async function setBatches(batches: FakeProofQueueBatch[]) {
-        accounts.clear();
-        for (const [index, batch] of batches.entries()) {
-            const [pda] = await findProofQueueBatchPda(
-                BigInt(index),
-                TOKEN_PROGRAM_ADDRESS
-            );
-            accounts.set(
-                pda,
-                new Uint8Array(
-                    getProofRequestRootEntryEncoder().encode({
-                        root: new Uint8Array(32).fill(index % 256),
-                        outputBlockNumber: BigInt(1000 + index),
-                        ...batch,
-                    })
-                )
-            );
-        }
-        accounts.set(
-            statePda,
-            new Uint8Array(
-                getNoriSolTokenBridgeEncoder().encode({
-                    authority: TOKEN_PROGRAM_ADDRESS,
-                    verifiedStateRoot: new Uint8Array(32),
-                    latestHead: 0n,
-                    noriBridgeVk: new Uint8Array(32),
-                    latestHeliosStoreInputHash: new Uint8Array(32),
-                    ethProofQueueAddress: new Uint8Array(20),
-                    ethTokenBridgeAddress: new Uint8Array(20),
-                    queueCursor: batches.at(-1)?.outputQueueCursor ?? 0n,
-                    proofQueueBatchCount: BigInt(batches.length),
-                })
-            )
-        );
-    }
-    await setBatches(initialBatches);
-
-    const toAccount = (address: Address) => {
-        const data = accounts.get(address);
-        return data === undefined
-            ? null
-            : {
-                  data: [base64.decode(data), 'base64'],
-                  executable: false,
-                  lamports: 1n,
-                  owner: TOKEN_PROGRAM_ADDRESS,
-                  space: BigInt(data.length),
-                  rentEpoch: 0n,
-              };
+    const setBatches = (next: FakeProofQueueBatch[]) => {
+        batches = next;
     };
+    const entryOf = (index: number) => ({
+        root: '0x' + (index % 256).toString(16).padStart(2, '0').repeat(32),
+        outputBlockNumber: BigInt(1000 + index),
+        inputQueueCursor: batches[index].inputQueueCursor,
+        outputQueueCursor: batches[index].outputQueueCursor,
+        tempoBlockNumber: BigInt(500 + index),
+    });
     const failIfDown = () => {
         if (state.failNextReads > 0) {
             state.failNextReads--;
-            throw new SolanaRpcTransportError(
-                'The request got no response.',
-                new TypeError('fetch failed')
-            );
+            throw new Error('The node did not answer.');
         }
     };
-    const rpc = {
-        getAccountInfo: (address: Address) => ({
-            send: async () => {
-                failIfDown();
-                return { context: { slot: 1n }, value: toAccount(address) };
-            },
-        }),
-        getMultipleAccounts: (addresses: Address[]) => ({
-            send: async () => {
-                failIfDown();
-                state.multipleAccountsCalls++;
-                if (addresses.length > 100)
-                    throw new Error('more than 100 accounts');
-                return {
-                    context: { slot: 1n },
-                    value: addresses.map(toAccount),
-                };
-            },
-        }),
+    const revert = (transaction: { to: string; data: string }, name: string, args: unknown[]) =>
+        makeError('execution reverted', 'CALL_EXCEPTION', {
+            action: 'call',
+            data: bridge.encodeErrorResult(name, args),
+            reason: null,
+            transaction,
+            invocation: null,
+            revert: null,
+        });
+
+    const provider = {
+        getNetwork: async () => ({ chainId: EXPECTED_TEMPO_CHAIN_ID }),
+        async call(transaction: { to: string; data: string }) {
+            failIfDown();
+            state.calls++;
+            if (getAddress(transaction.to) !== BRIDGE_ADDRESS) return '0x';
+            const call = bridge.parseTransaction({ data: transaction.data });
+            if (call === null) throw new Error('Not a bridge call.');
+            const count = BigInt(batches.length);
+            switch (call.name) {
+                case 'state':
+                    return bridge.encodeFunctionResult('state', [
+                        {
+                            verifiedStateRoot: '0x' + '00'.repeat(32),
+                            latestHead: 0n,
+                            noriBridgeVk: '0x' + '00'.repeat(32),
+                            latestHeliosStoreInputHash: '0x' + '00'.repeat(32),
+                            ethProofQueueAddress: QUEUE_ADDRESS,
+                            ethTokenBridgeAddress: TARGET_A,
+                            queueCursor: batches.at(-1)?.outputQueueCursor ?? 0n,
+                            proofQueueBatchCount: count,
+                        },
+                    ]);
+                case 'proofQueueBatches': {
+                    const [from, length] = call.args as unknown as [bigint, bigint];
+                    if (from + length > count)
+                        throw revert(transaction, 'ProofQueueBatchNotCommitted', [from + length - 1n, count]);
+                    return bridge.encodeFunctionResult('proofQueueBatches', [
+                        Array.from({ length: Number(length) }, (_, i) => entryOf(Number(from) + i)),
+                    ]);
+                }
+                case 'findProofQueueBatch': {
+                    const [requestId] = call.args as unknown as [bigint];
+                    const index = batches.findIndex(
+                        (batch) => batch.inputQueueCursor <= requestId && requestId < batch.outputQueueCursor
+                    );
+                    if (index === -1) throw revert(transaction, 'NoProofQueueBatchCovers', [requestId]);
+                    return bridge.encodeFunctionResult('findProofQueueBatch', [BigInt(index), entryOf(index)]);
+                }
+                default:
+                    throw new Error(`The fake bridge does not serve ${call.name}.`);
+            }
+        },
     };
-    return { rpc: rpc as unknown as SolanaRpc, state, setBatches };
+    Object.assign(provider, { provider });
+    return { provider: provider as unknown as EthereumProvider, state, setBatches };
 }
 
 /**
  * Both connections, each a real connectivity machine over a controllable
  * world: whether each endpoint answers its health checks, and whether the
- * network is online. Reads go through `provider` and `rpc`.
+ * network is online. Reads go through `provider` and `tempoProvider`.
  *
  * @param provider The Ethereum provider reads go through.
- * @param rpc The Solana RPC reads go through.
+ * @param tempoProvider The Tempo provider reads go through.
  * @returns The connections, and the switches that drive them.
  */
 export function createTestConnections(
     provider: EthereumProvider,
-    rpc: SolanaRpc
+    tempoProvider: EthereumProvider
 ) {
     // `…GoesDownOnReadFailure`: the endpoint stops answering at the moment a
     // read reports failing to reach it, so the re-check finds it down.
     const world = {
         ethereumAnswers: true,
-        solanaAnswers: true,
+        tempoAnswers: true,
         ethereumGoesDownOnReadFailure: false,
-        solanaGoesDownOnReadFailure: false,
+        tempoGoesDownOnReadFailure: false,
     };
     const network$ = new BehaviorSubject<'online' | 'offline'>('online');
     const ethereumReadFailures = { count: 0 };
-    const solanaReadFailures = { count: 0 };
+    const tempoReadFailures = { count: 0 };
 
     const ethereumReadFailed$ = new Subject<void>();
     const ethereumClose$ = new Subject<void>();
@@ -386,18 +369,18 @@ export function createTestConnections(
         close$: ethereumClose$,
     });
 
-    const solanaReadFailed$ = new Subject<void>();
-    const solanaClose$ = new Subject<void>();
-    const solanaConnection = httpConnection<SolanaHealth>({
+    const tempoReadFailed$ = new Subject<void>();
+    const tempoClose$ = new Subject<void>();
+    const tempoConnection = httpConnection<EthereumHealth>({
         ...FAST_TIMINGS,
-        urls: ['https://solana.test'],
+        urls: ['https://tempo.test'],
         checkHealth: async (url) => {
-            if (!world.solanaAnswers)
-                throw new Error('The Solana node did not answer.');
+            if (!world.tempoAnswers)
+                throw new Error('The Tempo node did not answer.');
             return {
                 outcome: 'onExpectedNetwork',
                 url,
-                health: { slot: 1n },
+                health: { blockNumber: 1 },
                 checkedAt: 0,
             };
         },
@@ -407,34 +390,8 @@ export function createTestConnections(
         networkCameOnline$: network$.pipe(
             filter((status) => status === 'online')
         ),
-        readFailed$: solanaReadFailed$,
-        close$: solanaClose$,
-    });
-
-    const reportSolanaReadFailed = () => {
-        solanaReadFailures.count++;
-        if (world.solanaGoesDownOnReadFailure) world.solanaAnswers = false;
-        solanaReadFailed$.next();
-    };
-    // As the real transport does: a request that got no response tells the machine.
-    const reportingRpc = new Proxy(rpc, {
-        get: (target, key) => {
-            const method: unknown = Reflect.get(target, key);
-            if (typeof method !== 'function') return method;
-            return (...args: unknown[]) => {
-                const pending = (method as (...a: unknown[]) => { send(): Promise<unknown> }).apply(
-                    target,
-                    args
-                );
-                return {
-                    send: () =>
-                        pending.send().catch((error: unknown) => {
-                            if (error instanceof SolanaRpcTransportError) reportSolanaReadFailed();
-                            throw error;
-                        }),
-                };
-            };
-        },
+        readFailed$: tempoReadFailed$,
+        close$: tempoClose$,
     });
 
     const connections: ProofRequestConnections = {
@@ -451,30 +408,34 @@ export function createTestConnections(
                 close: () => ethereumClose$.next(),
             },
         }),
-        solana: solanaChain({
-            http: {
-                connection: solanaConnection,
-                current: () => reportingRpc,
-                reportReadFailed: reportSolanaReadFailed,
-                close: () => solanaClose$.next(),
+        tempo: ethereumChain(
+            {
+                http: {
+                    connection: tempoConnection,
+                    current: () => tempoProvider,
+                    reportReadFailed: () => {
+                        tempoReadFailures.count++;
+                        if (world.tempoGoesDownOnReadFailure)
+                            world.tempoAnswers = false;
+                        tempoReadFailed$.next();
+                    },
+                    close: () => tempoClose$.next(),
+                },
             },
-            // The reading machines never use Solana's websocket: one that stays closed.
-            websocket: {
-                connection: { state$: new BehaviorSubject({ node: 'closed', data: {} }) },
-                socket: new Subject(),
-                close: (): void => undefined,
-            } as unknown as SolanaTransports['websocket'],
-        }),
+            {},
+            15_000,
+            'tempo'
+        ),
     };
     return {
         connections,
         world,
         network$,
         ethereumReadFailures,
-        solanaReadFailures,
+        tempoReadFailures,
         close: () => {
             ethereumClose$.next();
-            solanaClose$.next();
+            tempoClose$.next();
         },
     };
 }

@@ -3,9 +3,13 @@ export type TransportName =
     | 'ethereum.http'
     | 'ethereum.websocket'
     | 'ethereum.wallet'
-    | 'solana.http'
-    | 'solana.websocket'
+    | 'tempo.http'
+    | 'tempo.websocket'
+    | 'tempo.wallet'
     | 'nori.websocket';
+
+/** An EVM chain the sdk reads through its own chain object. */
+export type EvmChainName = 'ethereum' | 'tempo';
 
 /** A transport's state when it was asked for: a node of its machine, or not configured. */
 export interface TransportState {

@@ -1,44 +1,44 @@
 import { BehaviorSubject, filter, Subject } from 'rxjs';
 import { httpConnection } from '../../rpc/connection/httpConnection.impl.js';
-import type { SolanaHealth } from '../../rpc/solana/solanaHttp.js';
-import { EXPECTED_GENESIS_HASH, FAST_TIMINGS, reach, sleep } from '../testUtils.js';
+import type { EthereumHealth } from '../../rpc/eth/ethereumHttp.js';
+import { EXPECTED_TEMPO_CHAIN_ID, FAST_TIMINGS, reach, sleep } from '../testUtils.js';
 
-type SolanaAnswer = 'answers' | 'down' | 'otherCluster';
+type TempoAnswer = 'answers' | 'down' | 'otherChain';
 
 /**
- * A Solana endpoint set whose answers per endpoint and network the test
+ * A Tempo endpoint set whose answers per endpoint and network the test
  * controls. The first check runs as the machine starts, so answers that
  * matter to it are given up front.
  */
-function startSolanaEndpoints(
+function startTempoEndpoints(
     rpcUrls: string[],
-    initialAnswers: Record<string, SolanaAnswer> = {}
+    initialAnswers: Record<string, TempoAnswer> = {}
 ) {
-    const answers = new Map<string, SolanaAnswer>(
+    const answers = new Map<string, TempoAnswer>(
         rpcUrls.map((url) => [url, initialAnswers[url] ?? 'answers'])
     );
     const checked: string[] = [];
     const network$ = new BehaviorSubject<'online' | 'offline'>('online');
     const readFailed$ = new Subject<void>();
     const close$ = new Subject<void>();
-    const machine = httpConnection<SolanaHealth>({
+    const machine = httpConnection<EthereumHealth>({
         ...FAST_TIMINGS,
         urls: rpcUrls,
         checkHealth: async (url) => {
             checked.push(url);
             const answer = answers.get(url);
             if (answer === 'down') throw new Error(`${url} did not answer.`);
-            if (answer === 'otherCluster')
+            if (answer === 'otherChain')
                 return {
                     outcome: 'onOtherNetwork',
                     url,
-                    found: 'devnet',
-                    expected: EXPECTED_GENESIS_HASH,
+                    found: '4217',
+                    expected: EXPECTED_TEMPO_CHAIN_ID.toString(),
                 };
             return {
                 outcome: 'onExpectedNetwork',
                 url,
-                health: { slot: 1n },
+                health: { blockNumber: 1 },
                 checkedAt: 0,
             };
         },
@@ -54,9 +54,9 @@ function startSolanaEndpoints(
     return { machine, answers, checked, network$, readFailed$, close$ };
 }
 
-describe('HTTP connection machine, over Solana RPC endpoints', () => {
+describe('HTTP connection machine, over Tempo RPC endpoints', () => {
     test('moves on to the next endpoint when one is down', async () => {
-        const { machine, checked, close$ } = startSolanaEndpoints(
+        const { machine, checked, close$ } = startTempoEndpoints(
             ['https://first.test', 'https://second.test'],
             { 'https://first.test': 'down' }
         );
@@ -71,18 +71,18 @@ describe('HTTP connection machine, over Solana RPC endpoints', () => {
         close$.next();
     });
 
-    test('an endpoint on another cluster says which, and keeps checking until one is right', async () => {
-        const { machine, answers, close$ } = startSolanaEndpoints(
+    test('an endpoint on another chain says which, and keeps checking until one is right', async () => {
+        const { machine, answers, close$ } = startTempoEndpoints(
             ['https://only.test'],
             {
-                'https://only.test': 'otherCluster',
+                'https://only.test': 'otherChain',
             }
         );
         const wrong = await reach(machine, 'wrongNetwork');
         expect(wrong.data).toEqual({
             url: 'https://only.test',
-            found: 'devnet',
-            expected: EXPECTED_GENESIS_HASH,
+            found: '4217',
+            expected: EXPECTED_TEMPO_CHAIN_ID.toString(),
             failedChecks: 1,
         });
         answers.set('https://only.test', 'answers');
@@ -91,7 +91,7 @@ describe('HTTP connection machine, over Solana RPC endpoints', () => {
     });
 
     test('background checks stay on the endpoint that passed', async () => {
-        const { machine, checked, close$ } = startSolanaEndpoints([
+        const { machine, checked, close$ } = startTempoEndpoints([
             'https://first.test',
             'https://second.test',
         ]);
@@ -103,7 +103,7 @@ describe('HTTP connection machine, over Solana RPC endpoints', () => {
 
     test('a failed read checks at once, and going offline and back recovers', async () => {
         const { machine, answers, readFailed$, network$, close$ } =
-            startSolanaEndpoints(['https://only.test']);
+            startTempoEndpoints(['https://only.test']);
         await reach(machine, 'ready');
         answers.set('https://only.test', 'down');
         readFailed$.next();

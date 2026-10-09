@@ -3,7 +3,7 @@
 //! Every hash here is computed by `nori_hash::merkle_sha256_fixed`, the same
 //! code the SP1 guest runs to build each proof queue batch's
 //! `verified_requests_root`, so a witness built from these functions verifies
-//! against the batch root the Solana program stores.
+//! against the batch root the Tempo bridge contract stores.
 
 use std::str::FromStr;
 
@@ -61,7 +61,7 @@ pub struct RequestWitnessInput {
 
 /// The Merkle witness for one request in a proof queue batch, as 0x-prefixed hex.
 ///
-/// - `root`: the batch root; it must equal the root committed on Solana.
+/// - `root`: the batch root; it must equal the root committed on Tempo.
 /// - `index`: the request's leaf index in the batch.
 /// - `leaf`: the request's leaf hash.
 /// - `path`: the sibling hashes from the leaf up to the root, bottom-up.

@@ -1,4 +1,4 @@
-import { type EthereumProvider } from '@nori-zk/ethereum-solana-bridge/iso-provider';
+import { type EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
 import { EthDataNotFoundError } from './errors.js';
 
 /**

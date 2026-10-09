@@ -1,4 +1,4 @@
-import { type EthereumProvider } from '@nori-zk/ethereum-solana-bridge/iso-provider';
+import { type EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
 import { withBackoff } from '../../utils/withBackoff.js';
 import fetchProofRequestBatchByLogs from './fetchProofRequestBatchByLogs.js';
 import fetchProofRequestBatchByCall from './fetchProofRequestBatchByCall.js';

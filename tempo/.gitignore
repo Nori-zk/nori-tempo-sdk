@@ -1,0 +1,22 @@
+node_modules
+.env
+/lib
+
+# Hardhat files
+/cache
+artifacts/build-info
+
+# Package build output (tsc -p tsconfig.package.json)
+/build
+
+# TypeChain files
+/typechain
+/typechain-types
+
+# solidity-coverage files
+/coverage
+/coverage.json
+
+# Ignore generated env output
+.env.nori-tempo-token-bridge
+!.env.nori-tempo-token-bridge.example

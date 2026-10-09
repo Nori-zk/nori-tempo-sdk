@@ -82,8 +82,8 @@ function withOutcome<T, TOutcome extends ConnectedRead<T>['outcome']>(
  * requests, newest first, reading through both connections. It refreshes
  * every `pollIntervalMs` and on every `recheckTrigger$` emission.
  *
- * @param connections The Ethereum provider and Solana RPC, with their running connectivity machines.
- * @param addresses The queue and program addresses.
+ * @param connections The Ethereum and Tempo chains, with their running connectivity machines.
+ * @param addresses The queue and bridge addresses.
  * @param query The submitting address, lowest block and view size.
  * @param pollIntervalMs The delay between refreshes in ms (default: 15000).
  * @param recheckTrigger$ An extra refresh signal, e.g. bridge state changes from the websocket.
@@ -115,20 +115,19 @@ export function createLatestProofRequestsMachine(
      * @returns The newest requests and the block of the oldest one.
      */
     const readNewest = async (
-        { provider, rpc }: ConnectedReadClients,
+        clients: ConnectedReadClients,
         fromBlock: number
     ): Promise<NewestRequests> => {
-        const toBlock = await withBackoff(() =>
-            provider.getBlockNumber()
-        ).catch((error: unknown) => {
-            throw new EthRpcTransportError(
-                'Failed to read the latest block number.',
-                error
-            );
-        });
+        const toBlock = await clients.ethereum((provider) =>
+            withBackoff(() => provider.getBlockNumber()).catch((error: unknown) => {
+                throw new EthRpcTransportError(
+                    'Failed to read the latest block number.',
+                    error
+                );
+            })
+        );
         const { entries } = await fetchProofRequestHistoryPage(
-            provider,
-            rpc,
+            clients,
             addresses,
             {
                 target: query.target,

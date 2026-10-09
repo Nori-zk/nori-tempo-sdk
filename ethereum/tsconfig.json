@@ -14,5 +14,5 @@
   },
   "exclude": ["node_modules", "build", "artifacts", "cache"],
   "files": ["./hardhat-env.d.ts"],
-  "include": ["*.ts", "tasks/**/*.ts", "test/**/*.ts", "test/**/*.json", "types/**/*.ts"]
+  "include": ["*.ts", "contracts/**/*.ts", "tasks/**/*.ts", "test/**/*.ts", "test/**/*.json", "test-fork/**/*.ts", "types/**/*.ts"]
 }

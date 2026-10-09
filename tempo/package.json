@@ -1,0 +1,54 @@
+{
+    "name": "@nori-zk/tempo-token-bridge",
+    "version": "0.0.1",
+    "description": "NoriTempoTokenBridge contract and the SP1 Groth16 verifier it uses on Tempo",
+    "main": "build/index.js",
+    "exports": {
+        ".": {
+            "import": "./build/index.js"
+        }
+    },
+    "publishConfig": {
+        "registry": "https://registry.npmjs.org/",
+        "access": "public"
+    },
+    "type": "module",
+    "scripts": {
+        "lib": "mkdir -p lib && (test -d lib/sp1-contracts || git clone --depth 1 --branch v6.1.1 https://github.com/succinctlabs/sp1-contracts lib/sp1-contracts)",
+        "build": "npm run lib && TEMPO_NETWORK=hardhat npm run clean && TEMPO_NETWORK=hardhat hardhat compile && node stabilize-types.mjs . && tsc -p tsconfig.package.json",
+        "test": "npm run lib && TEMPO_NETWORK=localnet hardhat test --network localnet; code=$?; node stabilize-types.mjs . && exit $code",
+        "test-ci": "npm run lib && TEMPO_NETWORK=localnet hardhat test --network localnet; code=$?; node stabilize-types.mjs . && exit $code",
+        "typecheck": "tsc --noEmit",
+        "clean": "hardhat clean",
+        "format": "prettier --check --ignore-unknown **/*",
+        "format:fix": "prettier --write --ignore-unknown **/*",
+        "deploy": "dotenv -e .env -- sh -c 'npx hardhat --network $TEMPO_NETWORK deploy \"$@\"' --",
+        "register-mirror": "dotenv -e .env -- sh -c 'npx hardhat --network $TEMPO_NETWORK registerMirror \"$@\"' --"
+    },
+    "author": "",
+    "license": "MIT",
+    "dependencies": {
+        "@nori-zk/tempo-zk-utils": "*",
+        "esm-iso-logger": "1.0.2",
+        "ethers": "^6.16.0"
+    },
+    "devDependencies": {
+        "@nomicfoundation/hardhat-ethers": "^4.0.1",
+        "@nomicfoundation/hardhat-ethers-chai-matchers": "^3.0.0",
+        "@nomicfoundation/hardhat-mocha": "^3.0.17",
+        "@nomicfoundation/hardhat-network-helpers": "^3.0.6",
+        "@nomicfoundation/hardhat-typechain": "^3.0.0",
+        "@nori-zk/pts-types": "7.0.2",
+        "@types/mocha": "^10.0.0",
+        "@types/node": "^25.2.3",
+        "chai": "^5.1.2",
+        "dotenv": "^17.2.4",
+        "dotenv-cli": "^8.0.0",
+        "hardhat": "^3.1.11",
+        "npm-workspaces-publish-tool": "0.0.18",
+        "typechain": "^8.3.2"
+    },
+    "files": [
+        "build/"
+    ]
+}

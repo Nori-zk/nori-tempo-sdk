@@ -6,10 +6,16 @@ import {
   NoriProofRequestQueue__factory,
   NoriTokenBridge__factory,
 } from "../types/ethers-contracts/index.js";
+import {
+  LOCKED_TOKENS_SLOT_INDEX,
+  MAX_FEE_RATE,
+  MIN_LOCK_AMOUNT_WEI,
+  WEI_PER_BRIDGE_UNIT,
+} from "../contracts/NoriTokenBridge.const.js";
 import hre from "hardhat";
 const { ethers } = await hre.network.getOrCreate();
 
-// In production the codeChallenge is sha256 of a Solana pubkey, so it spans
+// In production the codeChallenge is sha256 of a Tempo address, so it spans
 // the full 256-bit range. A uniform random 32-byte value matches that
 // distribution.
 const codeChallengeBytes = new Uint8Array(32);
@@ -25,9 +31,6 @@ const codeChallengeHex = `0x${codeChallengeBigInt
 console.log("codeChallengeBigInt", codeChallengeBigInt);
 console.log("codeChallengeHex", codeChallengeHex);
 
-const WEI_PER_BRIDGE_UNIT = 10n ** 12n;
-/// Storage slot index of `lockedTokens`, mirrored by the SP1 guest program.
-const LOCKED_TOKENS_SLOT_INDEX = 2n;
 /// Per-request queue fee used by the queue-fee test blocks. 0.0002 ETH,
 /// matching the deployment default.
 const PROOF_REQUEST_QUEUE_FEE = 200n * WEI_PER_BRIDGE_UNIT;
@@ -170,9 +173,7 @@ describe("NoriTokenBridge", () => {
 
     it("Should have MIN_LOCK_AMOUNT of 0.001 ETH", async function () {
       const { tokenBridge } = await deployTokenBridgeFixture();
-      expect(await tokenBridge.MIN_LOCK_AMOUNT_WEI()).to.equal(
-        1000n * WEI_PER_BRIDGE_UNIT
-      );
+      expect(await tokenBridge.MIN_LOCK_AMOUNT_WEI()).to.equal(MIN_LOCK_AMOUNT_WEI);
     });
   });
 
@@ -285,7 +286,7 @@ describe("NoriTokenBridge", () => {
 
     it("MAX_FEE_RATE should equal 10000", async function () {
       const { tokenBridge } = await deployTokenBridgeFixture();
-      expect(await tokenBridge.MAX_FEE_RATE()).to.equal(10000);
+      expect(await tokenBridge.MAX_FEE_RATE()).to.equal(MAX_FEE_RATE);
     });
   });
 
@@ -364,7 +365,7 @@ describe("NoriTokenBridge", () => {
     it("Should succeed at exactly MIN_LOCK_AMOUNT", async function () {
       const { tokenBridge, owner } = await deployTokenBridgeFixture();
 
-      const minAmount = 1000n * WEI_PER_BRIDGE_UNIT; // 0.001 ETH
+      const minAmount = MIN_LOCK_AMOUNT_WEI;
 
       await tokenBridge
         .connect(owner)
@@ -488,7 +489,7 @@ describe("NoriTokenBridge", () => {
       // Send MIN_LOCK_AMOUNT = 1000 bridge units
       // feeBU = 1000 * 1 / 100000 = 0 (truncated) → rounds up to MIN_FEE_BU = 10
       // netBU = 1000 - 10 = 990
-      const minAmount = 1000n * WEI_PER_BRIDGE_UNIT;
+      const minAmount = MIN_LOCK_AMOUNT_WEI;
 
       await tokenBridge
         .connect(user1)
@@ -572,7 +573,7 @@ describe("NoriTokenBridge", () => {
       const { tokenBridge, user1 } = await deployTokenBridgeFixture();
 
       // Must be >= MIN_LOCK_AMOUNT AND not aligned
-      const invalidAmount = 1000n * WEI_PER_BRIDGE_UNIT + 1n;
+      const invalidAmount = MIN_LOCK_AMOUNT_WEI + 1n;
       await expect(
         tokenBridge
           .connect(user1)
@@ -833,14 +834,14 @@ describe("NoriTokenBridge", () => {
       // Set 1 rate unit — at 1010 BU deposit, feeBU = 1010*1/100000 = 0 → rounds up to MIN_FEE_BU = 10
       await tokenBridge.connect(owner).setLockFeeRate(1);
 
-      const desiredNet = 1000n * WEI_PER_BRIDGE_UNIT; // want 1000 BU net (= MIN_LOCK_AMOUNT_WEI)
+      const desiredNet = MIN_LOCK_AMOUNT_WEI; // want 1000 BU net
       const [grossAmount, fee, actualNetAmount] =
         await tokenBridge.calcGrossLockAmount(desiredNet);
 
       // grossBU should be desiredNetBU + MIN_FEE_BU = 1000 + 10 = 1010
       expect(grossAmount).to.equal(1010n * WEI_PER_BRIDGE_UNIT);
       expect(fee).to.equal(10n * WEI_PER_BRIDGE_UNIT); // MIN_FEE_BU
-      expect(actualNetAmount).to.equal(1000n * WEI_PER_BRIDGE_UNIT);
+      expect(actualNetAmount).to.equal(MIN_LOCK_AMOUNT_WEI);
 
       // Verify it actually works with lockTokens
       await tokenBridge
@@ -1144,9 +1145,7 @@ describe("NoriTokenBridge", () => {
         PROOF_REQUEST_QUEUE_FEE
       );
 
-      expect(await tokenBridge.MIN_LOCK_AMOUNT_WEI()).to.equal(
-        1000n * WEI_PER_BRIDGE_UNIT
-      );
+      expect(await tokenBridge.MIN_LOCK_AMOUNT_WEI()).to.equal(MIN_LOCK_AMOUNT_WEI);
     });
 
     it("Should reject a deposit below MIN_LOCK_AMOUNT_WEI", async function () {

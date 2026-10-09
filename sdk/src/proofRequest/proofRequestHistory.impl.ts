@@ -67,8 +67,8 @@ function withOutcome<TOutcome extends PageRead['outcome']>(
  * through both connections. The first page loads at once; each `loadMore()`
  * loads the next.
  *
- * @param connections The Ethereum provider and Solana RPC, with their running connectivity machines.
- * @param addresses The queue and program addresses.
+ * @param connections The Ethereum and Tempo chains, with their running connectivity machines.
+ * @param addresses The queue and bridge addresses.
  * @param query The submitting address, block range, order and page size.
  * @param backoff How long a failed read waits before reading again.
  * @returns
@@ -99,8 +99,8 @@ export function createProofRequestHistoryMachine(
         switchMap(({ cursor }) =>
             readThroughConnections$(
                 connections,
-                ({ provider, rpc }) =>
-                    fetchProofRequestHistoryPage(provider, rpc, addresses, {
+                (clients) =>
+                    fetchProofRequestHistoryPage(clients, addresses, {
                         ...query,
                         after: cursor,
                     }),

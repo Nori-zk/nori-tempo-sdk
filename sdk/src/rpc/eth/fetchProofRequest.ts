@@ -1,5 +1,5 @@
-import { NoriProofRequestQueue__factory } from '@nori-zk/ethereum-solana-bridge';
-import { type EthereumProvider } from '@nori-zk/ethereum-solana-bridge/iso-provider';
+import { NoriProofRequestQueue__factory } from '@nori-zk/ethereum-tempo-bridge';
+import { type EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
 import { withBackoff } from '../../utils/withBackoff.js';
 import {
     EthDataNotFoundError,

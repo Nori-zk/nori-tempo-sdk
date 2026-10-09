@@ -915,7 +915,7 @@
   "linkReferences": {},
   "deployedLinkReferences": {},
   "immutableReferences": {
-    "1388": [
+    "4706": [
       {
         "length": 32,
         "start": 1293
@@ -947,5 +947,5 @@
     ]
   },
   "inputSourceName": "project/contracts/NoriTokenBridge.sol",
-  "buildInfoId": "solc-0_8_28-fc4fe2225cfe529f10c581489cd2bce5d1bb6733"
+  "buildInfoId": "solc-0_8_28-386268e631fb81588efac1c60c7a4b6bbe9df43f"
 }

@@ -16,7 +16,18 @@ const factoriesIdx = indexLines.findIndex(
 );
 if (factoriesIdx !== -1) {
   const before = indexLines.slice(0, factoriesIdx + 1);
-  const after = indexLines.slice(factoriesIdx + 1).filter((l) => l.trim());
+  // SP1VerifierGroth16.sol and SP1VerifierPlonk.sol both declare SP1Verifier;
+  // typechain re-exports whichever it meets first in the shuffled order, so
+  // pin the root SP1Verifier exports to the Groth16 verifier the bridge uses.
+  const after = indexLines
+    .slice(factoriesIdx + 1)
+    .filter((l) => l.trim())
+    .map((l) =>
+      l.replace(
+        "/v6.1.0/SP1VerifierPlonk.sol/SP1Verifier",
+        "/v6.1.0/SP1VerifierGroth16.sol/SP1Verifier"
+      )
+    );
   after.sort();
   writeFileSync(indexPath, [...before, ...after, ""].join("\n"));
 }

@@ -15,7 +15,7 @@ export interface SP1Verifier$Type {
   readonly deployedLinkReferences: {};
   readonly immutableReferences: {};
   readonly inputSourceName: "project/lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierGroth16.sol";
-  readonly buildInfoId: "solc-0_8_28-e9674a2cc46a0743bd7c39f3da8bfea080a60359";
+  readonly buildInfoId: "solc-0_8_28-9e330e9b1e2721c968bf1b8a9fb6af8f4ac17055";
 };
 
 import "hardhat/types/artifacts";

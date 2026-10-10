@@ -231,5 +231,5 @@ npm run test -w tempo
 *Output ends like this:*
 
 ```
-  44 passing (10s)
+  55 passing (17s)
 ```

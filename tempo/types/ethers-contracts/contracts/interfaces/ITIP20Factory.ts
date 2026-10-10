@@ -6,13 +6,15 @@ import type { TypedContractEvent, TypedDeferredTopicFilter, TypedEventLog, Typed
   
 
   export interface ITIP20FactoryInterface extends Interface {
-    getFunction(nameOrSignature: "createToken"): FunctionFragment;
+    getFunction(nameOrSignature: "createToken" | "isTIP20"): FunctionFragment;
 
     getEvent(nameOrSignatureOrTopic: "TokenCreated"): EventFragment;
 
     encodeFunctionData(functionFragment: 'createToken', values: [string, string, string, AddressLike, AddressLike, BytesLike]): string;
+encodeFunctionData(functionFragment: 'isTIP20', values: [AddressLike]): string;
 
     decodeFunctionResult(functionFragment: 'createToken', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'isTIP20', data: BytesLike): Result;
   }
 
   
@@ -69,6 +71,14 @@ import type { TypedContractEvent, TypedDeferredTopicFilter, TypedEventLog, Typed
     >
     
 
+    
+    isTIP20: TypedContractMethod<
+      [token: AddressLike, ],
+      [boolean],
+      'view'
+    >
+    
+
 
     getFunction<T extends ContractMethod = ContractMethod>(key: string | FunctionFragment): T;
 
@@ -76,6 +86,11 @@ import type { TypedContractEvent, TypedDeferredTopicFilter, TypedEventLog, Typed
       [name: string, symbol: string, currency: string, quoteToken: AddressLike, admin: AddressLike, salt: BytesLike, ],
       [string],
       'nonpayable'
+    >;
+getFunction(nameOrSignature: 'isTIP20'): TypedContractMethod<
+      [token: AddressLike, ],
+      [boolean],
+      'view'
     >;
 
     getEvent(key: 'TokenCreated'): TypedContractEvent<TokenCreatedEvent.InputTuple, TokenCreatedEvent.OutputTuple, TokenCreatedEvent.OutputObject>;

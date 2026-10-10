@@ -17,6 +17,7 @@ const __dirname = path.dirname(__filename);
 import "./tasks/deploy.js";
 import { deploy } from "./tasks/deploy.js";
 import { registerMirror } from "./tasks/registerMirror.js";
+import { adoptMirror, createIssuerTip20 } from "./tasks/adoptMirror.js";
 
 const possibleNetworkName = process.env.TEMPO_NETWORK;
 const possibleRpcUrl = process.env.TEMPO_RPC_NETWORK_URL;
@@ -102,7 +103,7 @@ function loadRemappings(): string[] {
 
 const config: HardhatUserConfig = {
   networks,
-  tasks: [deploy, registerMirror],
+  tasks: [deploy, registerMirror, createIssuerTip20, adoptMirror],
   plugins: [
     hardhatMocha,
     hardhatTypechain,

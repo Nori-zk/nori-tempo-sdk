@@ -44,8 +44,9 @@ Tempo contracts, the deploy task and generated ethers types.
 - [NoriTempoTokenBridge.sol](tempo/contracts/NoriTempoTokenBridge.sol):
   `update` verifies a proof, advances the bridge state and commits the batch
   root; `mint` mints the bridged TIP-20 against a deposit proven by witness
-  against a committed batch; `registerMirror`, `mintERC20` and `applyPause`
-  run the ERC-20 mirrors; the views `state()`, `proofQueueBatch`,
+  against a committed batch; `registerMirror` (a mirror the bridge
+  creates), `adoptMirror` (the issuer's own TIP-20), `mintERC20` and
+  `applyPause` run the ERC-20 mirrors; the views `state()`, `proofQueueBatch`,
   `proofQueueBatches` and `findProofQueueBatch` serve every read the clients
   make.
 - [interfaces/](tempo/contracts/interfaces/): Tempo's `ITIP20` and
@@ -56,6 +57,10 @@ Tempo contracts, the deploy task and generated ethers types.
 - [tasks/deploy.ts](tempo/tasks/deploy.ts): deploys the verifier (unless
   Succinct's is given), creates the nETH TIP-20 through `TIP20Factory`,
   deploys the bridge and grants it `ISSUER_ROLE`.
+- [tasks/registerMirror.ts](tempo/tasks/registerMirror.ts) and
+  [tasks/adoptMirror.ts](tempo/tasks/adoptMirror.ts): an ERC-20's mirror,
+  created by the bridge (`registerMirror`), or the issuer's own TIP-20
+  (`createIssuerTip20`, then `adoptMirror`).
 - [test/](tempo/test/): the Hardhat suite, run on a local
   `anvil --network tempo`, with the integration test data in
   `test_examples/` and `proofs/`.
@@ -262,20 +267,39 @@ Security:
 
 Each ERC-20 locked on Ethereum is mirrored on Tempo by its own TIP-20, backed
 1:1 by what the bridge holds, and the ERC-20's pause follows it to the
-mirror.
+mirror. This is the bridge adapter of Tempo's
+[ERC-20 migration guide](https://tempo.xyz/developers/docs/guide/issuance/migrate-erc20-to-tip20):
+the ERC-20 stays canonical on Ethereum, holders lock it there, and the adapter
+holds `ISSUER_ROLE` and mints only what a proof shows was locked.
 
 ```mermaid
 erDiagram
-    BRIDGE ||--o{ MIRROR : "creates and holds ISSUER, PAUSE and UNPAUSE roles of"
+    BRIDGE ||--o{ MIRROR : "holds ISSUER, PAUSE and UNPAUSE roles of"
     MIRROR ||--|| ETH_ERC20 : "mirrors"
     BRIDGE ||--o{ ERC20_MINTED_SO_FAR : "one per ERC-20 and recipient"
+    BRIDGE ||--o{ ERC20_TOTAL_MINTED : "one per ERC-20"
 ```
 
-Setup, once per ERC-20: the Tempo bridge's deployer runs
-`npm run register-mirror -w tempo -- <ethToken> <name> <symbol> <currency>`.
-The bridge creates the TIP-20 through `TIP20Factory` with itself as admin
-and grants itself the issuer, pause and unpause roles. A `"USD"` currency
-makes the mirror a Tempo fee token.
+Setup, once per ERC-20, one of two ways:
+
+| | Created by the bridge | The issuer's own TIP-20, adopted |
+| --- | --- | --- |
+| Who runs it | The Tempo bridge's deployer: `npm run register-mirror -w tempo -- <ethToken> <name> <symbol> <currency>` | The issuer: `npm run create-issuer-tip20 -w tempo -- <name> <symbol> <currency>` (or its own `TIP20Factory.createToken` and three `grantRole`s); then the deployer: `npm run adopt-mirror -w tempo -- <ethToken> <tip20>` |
+| TIP-20 admin (`DEFAULT_ADMIN_ROLE`) | The bridge, for good: nobody can change the policy, cap, logo or roles | The issuer: it sets the TIP-403 transfer policy, supply cap and logo, and can revoke the bridge's roles |
+| Bridge's roles | `ISSUER_ROLE`, `PAUSE_ROLE`, `UNPAUSE_ROLE`, granted to itself | The same three, granted by the issuer; `adoptMirror` checks each (`MissingMirrorRole`) |
+| Supply | Only proven deposits mint it | Proven deposits, plus whatever other issuer the admin grants `ISSUER_ROLE` |
+
+`adoptMirror` also refuses an address `TIP20Factory.isTIP20` does not
+recognise, nETH, and a TIP-20 already mirroring another ERC-20. A mint that
+the issuer's supply cap or transfer policy refuses reverts; the recipient
+claims again once they allow it. `ethTokenOf(tip20)` names the ERC-20 a
+mirror stands for, and `erc20TotalMinted(ethToken)` counts what the bridge
+minted to everyone, never more than `totalLockedERC20BU(ethToken)` on
+Ethereum.
+
+The currency is immutable: pick what one unit stays about 1:1 with (`"USD"`
+for a USD stablecoin, `"BTC"` for wrapped bitcoin, its own symbol for an
+accumulating token). Only `"USD"` tokens pay Tempo fees.
 
 Lock and mint:
 
@@ -300,8 +324,11 @@ Pause:
    `NoriTempoTokenBridge.applyPause(witness, proofQueueBatchIndex)`, which
    pauses or unpauses the mirror. Only a batch newer than the last one
    applied for that token is accepted, because a batch's proof reads the
-   state at its own Ethereum block. A paused mirror cannot be transferred.
-   The pause reaches Tempo after Ethereum finality and proving.
+   state at its own Ethereum block. A paused mirror cannot be transferred,
+   minted or burned (TIP-20 pause semantics since T3), so claims wait for
+   the unpause. The pause reaches Tempo after Ethereum finality and
+   proving. No signer copies it: the proof replaces the sync signer an
+   issuer would otherwise run.
 
 Fees and limits:
 
@@ -347,4 +374,7 @@ All steps passed
 ```
 
 The Tempo side is covered by the `ERC-20 mirrors` tests in
-`tempo/test/NoriTempoTokenBridge.ts`, on a local `anvil --network tempo`.
+`tempo/test/NoriTempoTokenBridge.ts`, on a local `anvil --network tempo`,
+adopted mirrors included: the issuer stays admin, a missing role is refused,
+its supply cap holds a mint back until raised, and revoking the bridge's
+`ISSUER_ROLE` stops minting.

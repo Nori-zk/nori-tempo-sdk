@@ -13,7 +13,10 @@ SDK + on-chain code for the Nori Ethereum→Tempo token bridge:
 - The Tempo contract (`tempo/contracts/NoriTempoTokenBridge.sol`) verifies
   SP1 Groth16 proofs with sp1-contracts' v6.1.0 verifier and mints a TIP-20
   against proven deposits: nETH for ETH, and one TIP-20 mirror per ERC-20,
-  paused and unpaused with its ERC-20.
+  paused and unpaused with its ERC-20. A mirror is either created by the
+  bridge (`registerMirror`, the bridge its admin) or the issuer's own TIP-20
+  adopted by it (`adoptMirror`, the issuer its admin): the bridge adapter of
+  Tempo's ERC-20 migration guide.
 
 The `ethereum/` contracts take the Nori bridge's Ethereum-side design as a
 baseline, scoped down for this route: one-way, lock only, no unlock path.
@@ -32,6 +35,7 @@ baseline, scoped down for this route: one-way, lock only, no unlock path.
 | `tempo/lib/` | **Gitignored**: sp1-contracts cloned by `npm run lib` at the tag in `tempo/foundry.lock`; Hardhat compiles its `v6.1.0` verifier |
 | `tempo/tasks/deploy.ts` | Deploy: verifier (unless given), nETH TIP-20 via `TIP20Factory`, bridge, `ISSUER_ROLE` |
 | `tempo/tasks/registerMirror.ts` | `npm run register-mirror`: the deployer creates an ERC-20's TIP-20 mirror (DEPLOYMENT.md §5) |
+| `tempo/tasks/adoptMirror.ts` | `npm run create-issuer-tip20` (the issuer: its own TIP-20, granting the bridge its three roles) and `npm run adopt-mirror` (the deployer adopts it) (DEPLOYMENT.md §5) |
 | `tempo/test/` | Hardhat suite on `anvil --network tempo`; integration test data in `test_examples/`, `proofs/`, indexed by `constructExampleProofs.ts`; vendored `test-vectors/` |
 | `tempo-zk-utils/` | Integrity program vkey, proof decoding, first example proof, vendored vectors |
 | `proof-submitter/` | Rust client crate: alloy bindings from the Tempo artifacts, proof-JSON loader, `TempoProofSubmitter` (deploy + `update` sender) |
@@ -52,7 +56,7 @@ npm run build -w tempo        # npm run lib + compile + stabilize-types + tsc
 npm run build -w sdk
 npm run test -w tempo-zk-utils
 anvil --network tempo &       # then:
-npm run test -w tempo         # 44 passing
+npm run test -w tempo         # 55 passing
 npm run test -w ethereum      # 126 passing
 npm run test:fork -w ethereum # 8 passing: ERC-20 locking and pause sync on real mainnet USDC/WETH (local fork, needs network)
 npm run test:erc20-fork-flow -w ethereum  # every ERC-20 task through its npm script on a local fork: "All steps passed"
@@ -103,8 +107,8 @@ cargo run -p nori-cli -- deploy --help
   `accumulatedTokenFees` (`LOCKED_ERC20_SLOT_INDEX`, `PAUSE_STATE_SLOT_INDEX`,
   pinned by the fork tests). New state goes after them, never above.
 - `NoriTempoTokenBridge` appends slot 5 `mirrorOf`, 6 `erc20MintedSoFar`, 7
-  `_pauseAppliedPlusOne` after `mintedSoFar`; the planted-batch layout above
-  them is unchanged.
+  `_pauseAppliedPlusOne`, 8 `ethTokenOf`, 9 `erc20TotalMinted` after
+  `mintedSoFar`; the planted-batch layout above them is unchanged.
 - Leaves are told apart by their collection keys, never by their slot: an ETH
   deposit has one key, an ERC-20 deposit `[codeChallenge, token]`, a pause
   state `[PAUSE_KEY, token]` with value 1 or 2. `lockERC20` refuses
@@ -112,8 +116,12 @@ cargo run -p nori-cli -- deploy --help
   deposit could pass for a pause or mint the wrong token.
 - `applyPause` accepts only a batch newer than the last one applied for the
   token: a batch's proof read the pause state at its own Ethereum block.
-- The mirror admin (`registerMirror`) is the Tempo bridge's deployer, an
-  immutable; mirrors are created with the bridge as their admin.
+- The mirror admin (`registerMirror`, `adoptMirror`) is the Tempo bridge's
+  deployer, an immutable. A created mirror has the bridge as its admin; an
+  adopted one keeps the issuer as admin and must have granted the bridge
+  `ISSUER_ROLE`, `PAUSE_ROLE` and `UNPAUSE_ROLE` (checked with TIP-20's
+  `hasRole(account, role)`). `mirrorOf` and `ethTokenOf` stay one-to-one:
+  one mirror per ERC-20, one ERC-20 per mirror.
 - `PAUSE_KEY` is `keccak256("NORI_PAUSE_STATE")` on both chains and in both
   `const.ts` files (computed with `id`, never pasted); the tests compare them
   with the contracts.

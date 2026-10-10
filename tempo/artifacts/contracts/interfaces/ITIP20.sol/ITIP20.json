@@ -57,6 +57,30 @@
       "inputs": [
         {
           "internalType": "address",
+          "name": "account",
+          "type": "address"
+        },
+        {
+          "internalType": "bytes32",
+          "name": "role",
+          "type": "bytes32"
+        }
+      ],
+      "name": "hasRole",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
           "name": "to",
           "type": "address"
         },
@@ -118,5 +142,5 @@
   "deployedLinkReferences": {},
   "immutableReferences": {},
   "inputSourceName": "project/contracts/interfaces/ITIP20.sol",
-  "buildInfoId": "solc-0_8_28-e9674a2cc46a0743bd7c39f3da8bfea080a60359"
+  "buildInfoId": "solc-0_8_28-9e330e9b1e2721c968bf1b8a9fb6af8f4ac17055"
 }

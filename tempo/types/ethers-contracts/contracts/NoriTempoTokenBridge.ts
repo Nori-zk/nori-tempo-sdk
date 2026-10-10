@@ -33,9 +33,9 @@ export declare namespace NoriTempoTokenBridge {
     }
 
   export interface NoriTempoTokenBridgeInterface extends Interface {
-    getFunction(nameOrSignature: "ISSUER_ROLE" | "MAX_BATCH" | "MAX_COLLECTION_KEYS" | "MAX_TREE_DEPTH" | "PATH_USD" | "PAUSE_KEY" | "PAUSE_ROLE" | "PAUSE_STATE_PAUSED" | "PAUSE_STATE_UNPAUSED" | "PROOF_OUTPUTS_SIZE" | "TIP20_FACTORY" | "UNPAUSE_ROLE" | "applyPause" | "decodeProofOutputs" | "erc20MintedSoFar" | "ethProofQueueAddress" | "ethTokenBridgeAddress" | "findProofQueueBatch" | "lastPauseApplied" | "latestHead" | "latestHeliosStoreInputHash" | "mint" | "mintERC20" | "mintedSoFar" | "mirrorAdmin" | "mirrorOf" | "noriBridgeVk" | "proofQueueBatch" | "proofQueueBatchCount" | "proofQueueBatches" | "queueCursor" | "registerMirror" | "requestLeafHash" | "state" | "token" | "update" | "verifiedRequestWitnessRoot" | "verifiedStateRoot" | "verifier"): FunctionFragment;
+    getFunction(nameOrSignature: "ISSUER_ROLE" | "MAX_BATCH" | "MAX_COLLECTION_KEYS" | "MAX_TREE_DEPTH" | "PATH_USD" | "PAUSE_KEY" | "PAUSE_ROLE" | "PAUSE_STATE_PAUSED" | "PAUSE_STATE_UNPAUSED" | "PROOF_OUTPUTS_SIZE" | "TIP20_FACTORY" | "UNPAUSE_ROLE" | "adoptMirror" | "applyPause" | "decodeProofOutputs" | "erc20MintedSoFar" | "erc20TotalMinted" | "ethProofQueueAddress" | "ethTokenBridgeAddress" | "ethTokenOf" | "findProofQueueBatch" | "lastPauseApplied" | "latestHead" | "latestHeliosStoreInputHash" | "mint" | "mintERC20" | "mintedSoFar" | "mirrorAdmin" | "mirrorOf" | "noriBridgeVk" | "proofQueueBatch" | "proofQueueBatchCount" | "proofQueueBatches" | "queueCursor" | "registerMirror" | "requestLeafHash" | "state" | "token" | "update" | "verifiedRequestWitnessRoot" | "verifiedStateRoot" | "verifier"): FunctionFragment;
 
-    getEvent(nameOrSignatureOrTopic: "ERC20MintApplied" | "MintApplied" | "MirrorRegistered" | "PauseApplied" | "ProofQueueBatchCommitted" | "UpdateApplied"): EventFragment;
+    getEvent(nameOrSignatureOrTopic: "ERC20MintApplied" | "MintApplied" | "MirrorAdopted" | "MirrorRegistered" | "PauseApplied" | "ProofQueueBatchCommitted" | "UpdateApplied"): EventFragment;
 
     encodeFunctionData(functionFragment: 'ISSUER_ROLE', values?: undefined): string;
 encodeFunctionData(functionFragment: 'MAX_BATCH', values?: undefined): string;
@@ -49,11 +49,14 @@ encodeFunctionData(functionFragment: 'PAUSE_STATE_UNPAUSED', values?: undefined)
 encodeFunctionData(functionFragment: 'PROOF_OUTPUTS_SIZE', values?: undefined): string;
 encodeFunctionData(functionFragment: 'TIP20_FACTORY', values?: undefined): string;
 encodeFunctionData(functionFragment: 'UNPAUSE_ROLE', values?: undefined): string;
+encodeFunctionData(functionFragment: 'adoptMirror', values: [AddressLike, AddressLike]): string;
 encodeFunctionData(functionFragment: 'applyPause', values: [NoriTempoTokenBridge.VerifiedRequestWitnessStruct, BigNumberish]): string;
 encodeFunctionData(functionFragment: 'decodeProofOutputs', values: [BytesLike]): string;
 encodeFunctionData(functionFragment: 'erc20MintedSoFar', values: [AddressLike, AddressLike]): string;
+encodeFunctionData(functionFragment: 'erc20TotalMinted', values: [AddressLike]): string;
 encodeFunctionData(functionFragment: 'ethProofQueueAddress', values?: undefined): string;
 encodeFunctionData(functionFragment: 'ethTokenBridgeAddress', values?: undefined): string;
+encodeFunctionData(functionFragment: 'ethTokenOf', values: [AddressLike]): string;
 encodeFunctionData(functionFragment: 'findProofQueueBatch', values: [BigNumberish]): string;
 encodeFunctionData(functionFragment: 'lastPauseApplied', values: [AddressLike]): string;
 encodeFunctionData(functionFragment: 'latestHead', values?: undefined): string;
@@ -89,11 +92,14 @@ decodeFunctionResult(functionFragment: 'PAUSE_STATE_UNPAUSED', data: BytesLike):
 decodeFunctionResult(functionFragment: 'PROOF_OUTPUTS_SIZE', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'TIP20_FACTORY', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'UNPAUSE_ROLE', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'adoptMirror', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'applyPause', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'decodeProofOutputs', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'erc20MintedSoFar', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'erc20TotalMinted', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'ethProofQueueAddress', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'ethTokenBridgeAddress', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'ethTokenOf', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'findProofQueueBatch', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'lastPauseApplied', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'latestHead', data: BytesLike): Result;
@@ -135,6 +141,18 @@ decodeFunctionResult(functionFragment: 'verifier', data: BytesLike): Result;
       export type InputTuple = [recipient: AddressLike, depositRoot: BytesLike, amountMinted: BigNumberish, mintedSoFar: BigNumberish];
       export type OutputTuple = [recipient: string, depositRoot: string, amountMinted: bigint, mintedSoFar: bigint];
       export interface OutputObject {recipient: string, depositRoot: string, amountMinted: bigint, mintedSoFar: bigint };
+      export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>
+      export type Filter = TypedDeferredTopicFilter<Event>
+      export type Log = TypedEventLog<Event>
+      export type LogDescription = TypedLogDescription<Event>
+    }
+
+  
+
+    export namespace MirrorAdoptedEvent {
+      export type InputTuple = [ethToken: AddressLike, mirror: AddressLike];
+      export type OutputTuple = [ethToken: string, mirror: string];
+      export interface OutputObject {ethToken: string, mirror: string };
       export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>
       export type Filter = TypedDeferredTopicFilter<Event>
       export type Log = TypedEventLog<Event>
@@ -321,6 +339,14 @@ decodeFunctionResult(functionFragment: 'verifier', data: BytesLike): Result;
     
 
     
+    adoptMirror: TypedContractMethod<
+      [ethToken: AddressLike, tip20: AddressLike, ],
+      [void],
+      'nonpayable'
+    >
+    
+
+    
     applyPause: TypedContractMethod<
       [pauseWitness: NoriTempoTokenBridge.VerifiedRequestWitnessStruct, proofQueueBatchIndex: BigNumberish, ],
       [void],
@@ -345,6 +371,14 @@ decodeFunctionResult(functionFragment: 'verifier', data: BytesLike): Result;
     
 
     
+    erc20TotalMinted: TypedContractMethod<
+      [arg0: AddressLike, ],
+      [bigint],
+      'view'
+    >
+    
+
+    
     ethProofQueueAddress: TypedContractMethod<
       [],
       [string],
@@ -355,6 +389,14 @@ decodeFunctionResult(functionFragment: 'verifier', data: BytesLike): Result;
     
     ethTokenBridgeAddress: TypedContractMethod<
       [],
+      [string],
+      'view'
+    >
+    
+
+    
+    ethTokenOf: TypedContractMethod<
+      [arg0: AddressLike, ],
       [string],
       'view'
     >
@@ -599,6 +641,11 @@ getFunction(nameOrSignature: 'UNPAUSE_ROLE'): TypedContractMethod<
       [string],
       'view'
     >;
+getFunction(nameOrSignature: 'adoptMirror'): TypedContractMethod<
+      [ethToken: AddressLike, tip20: AddressLike, ],
+      [void],
+      'nonpayable'
+    >;
 getFunction(nameOrSignature: 'applyPause'): TypedContractMethod<
       [pauseWitness: NoriTempoTokenBridge.VerifiedRequestWitnessStruct, proofQueueBatchIndex: BigNumberish, ],
       [void],
@@ -614,6 +661,11 @@ getFunction(nameOrSignature: 'erc20MintedSoFar'): TypedContractMethod<
       [bigint],
       'view'
     >;
+getFunction(nameOrSignature: 'erc20TotalMinted'): TypedContractMethod<
+      [arg0: AddressLike, ],
+      [bigint],
+      'view'
+    >;
 getFunction(nameOrSignature: 'ethProofQueueAddress'): TypedContractMethod<
       [],
       [string],
@@ -621,6 +673,11 @@ getFunction(nameOrSignature: 'ethProofQueueAddress'): TypedContractMethod<
     >;
 getFunction(nameOrSignature: 'ethTokenBridgeAddress'): TypedContractMethod<
       [],
+      [string],
+      'view'
+    >;
+getFunction(nameOrSignature: 'ethTokenOf'): TypedContractMethod<
+      [arg0: AddressLike, ],
       [string],
       'view'
     >;
@@ -737,6 +794,7 @@ getFunction(nameOrSignature: 'verifier'): TypedContractMethod<
 
     getEvent(key: 'ERC20MintApplied'): TypedContractEvent<ERC20MintAppliedEvent.InputTuple, ERC20MintAppliedEvent.OutputTuple, ERC20MintAppliedEvent.OutputObject>;
 getEvent(key: 'MintApplied'): TypedContractEvent<MintAppliedEvent.InputTuple, MintAppliedEvent.OutputTuple, MintAppliedEvent.OutputObject>;
+getEvent(key: 'MirrorAdopted'): TypedContractEvent<MirrorAdoptedEvent.InputTuple, MirrorAdoptedEvent.OutputTuple, MirrorAdoptedEvent.OutputObject>;
 getEvent(key: 'MirrorRegistered'): TypedContractEvent<MirrorRegisteredEvent.InputTuple, MirrorRegisteredEvent.OutputTuple, MirrorRegisteredEvent.OutputObject>;
 getEvent(key: 'PauseApplied'): TypedContractEvent<PauseAppliedEvent.InputTuple, PauseAppliedEvent.OutputTuple, PauseAppliedEvent.OutputObject>;
 getEvent(key: 'ProofQueueBatchCommitted'): TypedContractEvent<ProofQueueBatchCommittedEvent.InputTuple, ProofQueueBatchCommittedEvent.OutputTuple, ProofQueueBatchCommittedEvent.OutputObject>;
@@ -750,6 +808,10 @@ getEvent(key: 'UpdateApplied'): TypedContractEvent<UpdateAppliedEvent.InputTuple
 
       'MintApplied(address,bytes32,uint64,uint64)': TypedContractEvent<MintAppliedEvent.InputTuple, MintAppliedEvent.OutputTuple, MintAppliedEvent.OutputObject>;
       MintApplied: TypedContractEvent<MintAppliedEvent.InputTuple, MintAppliedEvent.OutputTuple, MintAppliedEvent.OutputObject>;
+    
+
+      'MirrorAdopted(address,address)': TypedContractEvent<MirrorAdoptedEvent.InputTuple, MirrorAdoptedEvent.OutputTuple, MirrorAdoptedEvent.OutputObject>;
+      MirrorAdopted: TypedContractEvent<MirrorAdoptedEvent.InputTuple, MirrorAdoptedEvent.OutputTuple, MirrorAdoptedEvent.OutputObject>;
     
 
       'MirrorRegistered(address,address,string,string)': TypedContractEvent<MirrorRegisteredEvent.InputTuple, MirrorRegisteredEvent.OutputTuple, MirrorRegisteredEvent.OutputObject>;

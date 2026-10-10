@@ -1,6 +1,6 @@
 {
     "name": "@nori-zk/nori-bridge-tempo-sdk",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "description": "Nori bridge Tempo SDK: track Ethereum proof requests through the bridge to Tempo and build their witnesses",
     "author": "",
     "license": "Apache-2.0",

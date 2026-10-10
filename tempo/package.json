@@ -1,6 +1,6 @@
 {
     "name": "@nori-zk/tempo-token-bridge",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "description": "NoriTempoTokenBridge contract and the SP1 Groth16 verifier it uses on Tempo",
     "main": "build/index.js",
     "exports": {

@@ -1,6 +1,6 @@
 import { type ResolveNodeData } from '@yaw-rx/ystate';
 import { type EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
-import { type Interface, isError, type Signer } from 'ethers';
+import { dataLength, type Interface, isError, type Signer } from 'ethers';
 import { catchError, defer, filter, forkJoin, map, type Observable, of, switchMap, take, withLatestFrom } from 'rxjs';
 import {
     type ConnectedReadClients,
@@ -258,8 +258,11 @@ export type SendResult =
  * @param errors The contract's error ABI, if given.
  * @returns The error's name, or what is known without it.
  */
-const errorNameOf = (data: string | null | undefined, errors: Interface | undefined): string =>
-    (data ? errors?.parseError(data)?.name : undefined) ?? (data ? `revert ${data}` : 'revert without data');
+const errorNameOf = (data: string | null | undefined, errors: Interface | undefined): string => {
+    // An error's data starts with its 4-byte selector; `0x` (a bare `revert()`, or none) carries no error.
+    if (!data || dataLength(data) < 4) return 'revert without data';
+    return errors?.parseError(data)?.name ?? `revert ${data}`;
+};
 
 /**
  * Sends one transaction with a signer, once: its nonce when one is pinned.

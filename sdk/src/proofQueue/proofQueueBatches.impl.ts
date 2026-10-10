@@ -1,4 +1,4 @@
-import { defer, EMPTY, expand, forkJoin, last, map, merge, type Observable, of, switchMap } from 'rxjs';
+import { catchError, concat, defer, EMPTY, expand, forkJoin, last, map, merge, type Observable, of, switchMap } from 'rxjs';
 import { type ConnectedReadClients, type ProofRequestConnections } from '../proofRequest/connectedRead.js';
 import { type ProofRequestHistoryAddresses } from '../proofRequest/fetchProofRequestHistory.js';
 import { enqueuedProofRequests$ } from '../rpc/eth/enqueuedProofRequests.js';
@@ -13,11 +13,11 @@ import {
     readMachineValue$,
     type ReadRetryBackoff,
     startReadThroughConnectionsMachine,
-    dueOn,
 } from '../rpc/connection/readThroughConnections.impl.js';
 import { type createBridgeStateMachine } from './bridgeState.impl.js';
 import { type createEthereumBlocksMachine } from './ethereumBlocks.impl.js';
 import {
+    EMPTY_PROOF_QUEUE_BATCHES_VIEW,
     ProofQueueBatchesGraph,
     type ProofQueueBatchesView,
     type ShownProofQueueBatch,
@@ -85,6 +85,20 @@ export function createProofQueueBatchesMachine(
     recheckTrigger$: Observable<unknown> = EMPTY,
     backoff: ReadRetryBackoff = {}
 ) {
+    /**
+     * The bridge's queue cursor and batch count, and Ethereum's blocks, from
+     * their machines once both are `current`.
+     *
+     * @returns Them, once; errors with a source's error when it fails.
+     */
+    const sourcesHeld$ = () =>
+        forkJoin([readMachineValue$(sources.bridgeState), readMachineValue$(sources.ethereumBlocks)]).pipe(
+            map(([{ bridgeState }, blocks]) => {
+                if (bridgeState === undefined) throw new Error('The bridge state machine holds no bridge state.');
+                return { queueCursor: bridgeState.queueCursor, batchCount: bridgeState.proofQueueBatchCount, ...blocks };
+            })
+        );
+
     /**
      * The batches holding `query.target`'s newest proven requests, newest
      * first, each with its request ids: its requests read from Ethereum
@@ -160,19 +174,15 @@ export function createProofQueueBatchesMachine(
      * `query.target`'s requests) and the requests no batch covers yet.
      *
      * @param clients The clients to read through.
+     * @param target The submitting address the view is filtered on, if any.
      * @returns The view, once.
      */
-    const readView$ = (clients: ConnectedReadClients): Observable<ProofQueueBatchesView> =>
-        forkJoin([readMachineValue$(sources.bridgeState), readMachineValue$(sources.ethereumBlocks)]).pipe(
-            map(([{ bridgeState }, blocks]) => ({
-                queueCursor: bridgeState?.queueCursor ?? 0n,
-                batchCount: bridgeState?.proofQueueBatchCount ?? 0n,
-                ...blocks,
-            })),
+    const readView$ = (clients: ConnectedReadClients, target: string | undefined): Observable<ProofQueueBatchesView> =>
+        sourcesHeld$().pipe(
             switchMap(({ queueCursor, batchCount, latestBlock, finalizedBlock }) =>
-                (query.target === undefined
+                (target === undefined
                     ? of(undefined)
-                    : readTargetBatches$(clients, query.target, queueCursor, latestBlock)
+                    : readTargetBatches$(clients, target, queueCursor, latestBlock)
                 ).pipe(
                     switchMap((matching) => {
                         const indices = matching
@@ -208,7 +218,7 @@ export function createProofQueueBatchesMachine(
                                                         : query.fromBlock,
                                                     toBlock: latestBlock,
                                                     fromRequestId: queueCursor,
-                                                    target: query.target,
+                                                    target,
                                                     maxBlockRangePerQuery: query.maxBlockRangePerQuery,
                                                 })
                                             )
@@ -232,19 +242,29 @@ export function createProofQueueBatchesMachine(
 
     return startReadThroughConnectionsMachine(ProofQueueBatchesGraph, {
         connections,
-        read: (clients) => readView$(clients).pipe(map((view) => ({ view }))),
+        read: (clients, { target }) => readView$(clients, target).pipe(map((view) => ({ target, view }))),
+        // Following once both sources hold a value (or one failed, which fails the read): the view
+        // waits in `loading` until then. A refresh is due when a source moves past the view after it.
         refreshOn: ({ view }) =>
-            dueOn(merge(
-                readMachineChanged$(
-                    sources.bridgeState,
-                    ({ bridgeState }) =>
-                        bridgeState?.proofQueueBatchCount !== view.batchCount ||
-                        bridgeState.queueCursor !== view.queueCursor
+            concat(
+                sourcesHeld$().pipe(
+                    map((): void => undefined),
+                    catchError(() => of(undefined))
                 ),
-                readMachineChanged$(sources.ethereumBlocks, ({ latestBlock }) => latestBlock > view.latestBlock),
-                recheckTrigger$
-            )),
+                merge(
+                    readMachineChanged$(
+                        sources.bridgeState,
+                        ({ bridgeState }) =>
+                            bridgeState?.proofQueueBatchCount !== view.batchCount ||
+                            bridgeState.queueCursor !== view.queueCursor
+                    ),
+                    readMachineChanged$(sources.ethereumBlocks, ({ latestBlock }) => latestBlock > view.latestBlock),
+                    recheckTrigger$
+                )
+            ),
         kind: 'logs',
         backoff,
+        // The submitting address it is filtered on is its starting data.
+        start: { node: 'loading', data: { target: query.target, view: EMPTY_PROOF_QUEUE_BATCHES_VIEW, failedReads: 0 } },
     });
 }

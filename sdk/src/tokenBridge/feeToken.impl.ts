@@ -35,13 +35,15 @@ export const createFeeTokenMachine = (
     });
     return startReadThroughConnectionsMachine(FeeTokenGraph, {
         connections,
-        read: (clients) =>
+        read: (clients, held) =>
             clients
-                .tempo((provider) => feeToken$(provider, account))
-                .pipe(map((feeToken) => ({ feeToken }))),
+                .tempo((provider) => feeToken$(provider, held.account))
+                .pipe(map((feeToken) => ({ account: held.account, feeToken }))),
         refreshOn: () => changesOf$(feeTokenSet),
         needs: ['tempo'],
         backoff,
         owns: [feeTokenSet],
+        // The account is its starting data.
+        start: { node: 'loading', data: { account, feeToken: undefined, failedReads: 0 } },
     });
 };

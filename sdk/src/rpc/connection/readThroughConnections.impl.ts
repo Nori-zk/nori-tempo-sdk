@@ -10,12 +10,14 @@ import {
     Subject,
     switchMap,
     take,
+    takeUntil,
     timer,
 } from 'rxjs';
 import {
     bothReady$,
     type ConnectedRead,
     type ConnectedReadClients,
+    needsNotReady$,
     type ProofRequestConnections,
     type ReadNeed,
     readThroughConnections$,
@@ -166,18 +168,29 @@ export function readThroughConnectionsTransitions<TData extends object, TPreviou
     );
 
     // The outcome edges of `loading` and `refreshing` share one read per entry
-    // into either, started once `refreshOn` is following.
+    // into either, started once `refreshOn` is following. Until then, needs
+    // that cannot serve the read move it to wait for them.
     const read$: Observable<ReadThroughConnectionsRead<TData, TPrevious>> = state$.pipe(
         filter(({ node }) => node === 'loading' || node === 'refreshing'),
         switchMap(({ node, data }) => {
             const previous = ownDataOf<TPrevious>(data);
             const at = node as 'loading' | 'refreshing';
-            return sinceRead$.pipe(
+            const following$ = sinceRead$.pipe(
                 filter(({ following }) => following),
-                take(1),
-                switchMap(() =>
-                    readThroughConnections$(connections, (clients) => read(clients, previous, at), kind, needs)
+                take(1)
+            );
+            return merge(
+                needsNotReady$(connections, needs).pipe(
+                    takeUntil(following$),
+                    map((waitingOn) => ({ outcome: 'connectionLost' as const, waitingOn }))
                 ),
+                following$.pipe(
+                    switchMap(() =>
+                        readThroughConnections$(connections, (clients) => read(clients, previous, at), kind, needs)
+                    )
+                )
+            ).pipe(
+                take(1),
                 map((outcome) => ({ ...outcome, previous, node: at }))
             );
         }),

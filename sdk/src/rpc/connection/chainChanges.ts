@@ -15,9 +15,15 @@ const counted = { changes: 0, unsupported: [] as SubscriptionTransport[] };
  *   each push after it is a change. Another transport becoming the first moves it
  *   there (`transportChanged`), and counts a change.
  * - A transport that refuses the subscription (a wallet without
- *   `eth_subscribe`, a node refusing the filter) joins `unsupported`.
+ *   `eth_subscribe`, a node refusing the filter) joins `unsupported`
+ *   (`subscriptionRefused`). A subscription that ends any other way (the
+ *   socket closed, nothing to send it through) is lost
+ *   (`subscriptionLost`): it polls, holding the transport in `lostOn`, and
+ *   subscribes on it again only once it has been unusable and is usable
+ *   again; another usable transport is subscribed on at once.
  * - `polling`: no transport can subscribe; it polls through the calls order
- *   every interval. `lastBlock` is the last block polled; the first poll
+ *   every interval, and waits in `polling` while no transport in that order
+ *   can take a call. `lastBlock` is the last block polled; the first poll
  *   only sets it. A new block is a change, or with a filter, a new block
  *   holding a matching log. After a gap longer than one log query, it moves
  *   `lastBlock` to the latest block and counts one change instead of
@@ -33,13 +39,23 @@ const counted = { changes: 0, unsupported: [] as SubscriptionTransport[] };
 export const ChainChangesGraph = define({
     nodes: {
         subscribed: { ...counted, transport: 'websocket' as SubscriptionTransport, acknowledged: false },
-        polling: { ...counted, lastBlock: undefined as number | undefined },
-        pollFailed: { ...counted, lastBlock: undefined as number | undefined, error: '' },
+        polling: {
+            ...counted,
+            lastBlock: undefined as number | undefined,
+            lostOn: undefined as SubscriptionTransport | undefined,
+        },
+        pollFailed: {
+            ...counted,
+            lastBlock: undefined as number | undefined,
+            lostOn: undefined as SubscriptionTransport | undefined,
+            error: '',
+        },
         closed: {},
     },
     edges: {
         pushed: { from: 'subscribed', to: 'subscribed', on: 'pushes.next' },
         subscriptionRefused: { from: 'subscribed', to: 'polling', on: 'pushes.error' },
+        subscriptionLost: { from: 'subscribed', to: 'polling', on: 'pushes.complete' },
         transportChanged: { from: 'subscribed', to: 'subscribed', on: 'subscribable.next' },
         transportLost: { from: 'subscribed', to: 'polling', on: 'unsubscribable.next' },
 

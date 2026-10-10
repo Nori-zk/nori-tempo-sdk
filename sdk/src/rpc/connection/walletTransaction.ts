@@ -1,47 +1,40 @@
 import { define, type StateUnion } from '@yaw-rx/ystate';
-import { sentTransactionReceiptOf } from '../../transaction/sentTransaction.js';
+import { sentTransactionOf } from '../../transaction/sentTransaction.js';
 
-const { nodes, edges } = sentTransactionReceiptOf();
+const { nodes, edges } = sentTransactionOf('askingToSign');
 
 /**
- * One transaction sent through the user's wallet: asking the wallet to sign
- * and send it, then its receipt, read through the chain's connection
- * (`readThroughConnectionsOf`) until it is mined.
+ * One transaction sent through the user's wallet, made for one call and
+ * sent on a send request, then followed on the chain until it ends
+ * (`sentTransactionOf`). A send request is gated on the wallet being ready.
  *
- * - `waitingForWallet`: the wallet is not ready to sign (none chosen, on
- *   another chain, unreachable); it asks once the wallet is ready.
- * - `askingToSign`: the wallet shows the transaction; one request per entry.
- *   Its outcomes: `signed` with the transaction's hash, to `loading`; the
- *   user said no, to `declined`; the wallet or the contract refused it, or
- *   the wallet dropped while asking, to `sendFailed` with the error.
- * - `declined` and `sendFailed` send again only on `send()`: a request the
- *   wallet may still hold is never sent twice by itself.
- * - From `loading` on, the receipt is read through the chain's connection,
- *   and again on each new block until the transaction is mined; `current`
- *   holds it, `receipt.status` 1 for success and 0 for a revert.
- * - `closed` is terminal.
+ * - `askingToSign`: the wallet shows the transaction; one request per
+ *   entry. Its outcomes: `sent` with the transaction's hash, sender and
+ *   nonce, to `loading`; the user said no, to `declined`; the contract
+ *   reverted it at gas estimation, to `refused` with the revert's name; the
+ *   wallet failing for any other reason, or dropping while asking, to
+ *   `sendFailed` with the error.
+ * - `declined` accepts a send request again, through the same gate.
+ * - The wallet picks the nonce itself, so a send again after a drop cannot
+ *   pin it; only the blocks the node has not known it for tell a drop.
  */
 export const WalletTransactionGraph = define({
     nodes: {
-        waitingForWallet: {},
-        askingToSign: {},
-        declined: {},
-        sendFailed: { error: '' },
         ...nodes,
+        askingToSign: { transaction: nodes.ready.transaction },
+        declined: { transaction: nodes.ready.transaction },
     },
     edges: {
-        walletReady: { from: 'waitingForWallet', to: 'askingToSign', on: 'walletReady.next' },
-        signed: { from: 'askingToSign', to: 'loading', on: 'signed.next' },
+        ...edges,
+        sent: { from: 'askingToSign', to: 'loading', on: 'sent.next' },
         userDeclined: { from: 'askingToSign', to: 'declined', on: 'declined.next' },
-        sendRefused: { from: 'askingToSign', to: 'sendFailed', on: 'sendFailed.next' },
+        contractRefused: { from: 'askingToSign', to: 'refused', on: 'refused.next' },
+        walletRefused: { from: 'askingToSign', to: 'sendFailed', on: 'sendFailed.next' },
         walletLostWhileAsking: { from: 'askingToSign', to: 'sendFailed', on: 'walletLost.next' },
-        sendAgainAfterDecline: { from: 'declined', to: 'waitingForWallet', on: 'send.next' },
-        sendAgainAfterFailure: { from: 'sendFailed', to: 'waitingForWallet', on: 'send.next' },
-        closedWhileWaitingForWallet: { from: 'waitingForWallet', to: 'closed', on: 'close.next' },
+        sendAgainAfterDecline: { from: 'declined', to: 'askingToSign', on: 'send.next' },
+        notReadyAfterDecline: { from: 'declined', to: 'notReadyToSend', on: 'send.error' },
         closedWhileAskingToSign: { from: 'askingToSign', to: 'closed', on: 'close.next' },
         closedAfterDecline: { from: 'declined', to: 'closed', on: 'close.next' },
-        closedAfterSendFailed: { from: 'sendFailed', to: 'closed', on: 'close.next' },
-        ...edges,
     },
 });
 

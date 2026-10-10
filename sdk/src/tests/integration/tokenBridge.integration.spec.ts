@@ -11,7 +11,6 @@ import {
     ContractFactory,
     type ContractTransactionResponse,
     id,
-    isError,
     JsonRpcProvider,
     JsonRpcSigner,
     keccak256,
@@ -30,7 +29,6 @@ import {
     firstValueFrom,
     map,
     type Observable,
-    switchMap,
     take,
     timeout,
 } from 'rxjs';
@@ -60,20 +58,22 @@ import { request_batch_root, type RequestLeaf } from '@nori-zk/ethereum-tempo-pr
 import {
     applyPauseCall,
     createConnections,
-    createTransactionReceiptMachine,
     createFeeTokenMachine,
     createLastPauseAppliedMachine,
     createMintedSoFarMachine,
     createMirrorMachine,
     createProofRequestStateMachine,
     createProofRequestWitnessMachine,
+    createSignerTransactionMachine,
     createTokenBalanceMachine,
     mintCall,
     mintERC20Call,
     ProofRequestState,
-    type TokenBridgeCall,
+    tokenBridgeInterface,
     type ProofAvailableProofRequestSnapshot,
     type ProofRequestStateNodeUnion,
+    type SignerTransactionState,
+    type TransactionCall,
 } from '../../index.js';
 import { startAnvil, type LocalNode } from '../localNodes.js';
 import { type GraphState } from '../../utils/machines.js';
@@ -103,11 +103,6 @@ async function minedHash(sent: Promise<ContractTransactionResponse>): Promise<st
     const receipt = await (await sent).wait();
     if (receipt === null) throw new Error('The transaction has no receipt.');
     return receipt.hash;
-}
-
-/** The name of the Tempo bridge's custom error that revert data encodes. */
-function bridgeErrorName(data: string | null | undefined): string | undefined {
-    return data ? NoriTempoTokenBridge__factory.createInterface().parseError(data)?.name : undefined;
 }
 
 /** A value the test needs, failing the test when it is missing. */
@@ -268,17 +263,26 @@ describe('Token bridge through the sdk on local Ethereum and Tempo nodes', () =>
     const feeToken$ = (account: string) =>
         defer(() => valueOnceRead$(createFeeTokenMachine(connections, account))).pipe(map(({ feeToken }) => feeToken));
 
-    /** A token bridge call sent with the test's Tempo signer, then its receipt's status once mined, from its receipt machine. */
-    const mined$ = (call: TokenBridgeCall) =>
-        call(tempoSigner).pipe(
-            switchMap((sent) =>
-                valueOnceRead$(
-                    createTransactionReceiptMachine(connections, 'tempo', sent.hash),
-                    ({ receipt }) => receipt !== undefined
-                )
-            ),
-            map(({ receipt }) => receipt?.status)
-        );
+    /** The nodes a transaction ends in, or stops in until the next send request. */
+    const SETTLED = new Set(['confirmed', 'reverted', 'replaced', 'dropped', 'refused', 'sendFailed', 'notReadyToSend']);
+
+    /**
+     * A token bridge call sent once with the test's Tempo signer, from its
+     * transaction machine: the state it settles in; the machine closes after.
+     */
+    const sent$ = (call: TransactionCall) =>
+        defer(() => {
+            const transaction = createSignerTransactionMachine(connections, 'tempo', tempoSigner, call, {
+                errors: tokenBridgeInterface,
+            });
+            transaction.send();
+            return transaction.state$.pipe(
+                filter((state: SignerTransactionState) => SETTLED.has(state.node)),
+                take(1),
+                timeout(60_000),
+                finalize(() => transaction.close())
+            );
+        });
 
     beforeAll(async () => {
         [ethereumNode, tempoNode] = await Promise.all([
@@ -379,13 +383,15 @@ describe('Token bridge through the sdk on local Ethereum and Tempo nodes', () =>
 
         const lockedBU = MIN_LOCK_AMOUNT_WEI / WEI_PER_BRIDGE_UNIT;
         const mint = mintCall(bridgeAddress, witness, proofAvailable.proofQueueBatchIndex);
-        expect(await firstValueFrom(mined$(mint))).toBe(1);
+        expect((await firstValueFrom(sent$(mint))).node).toBe('confirmed');
         expect(await firstValueFrom(mintedSoFar$(tempoSigner.address))).toBe(lockedBU);
         expect(await firstValueFrom(balance$(nETH, tempoSigner.address))).toBe(lockedBU);
 
         // A claim reused has nothing left to mint: the bridge refuses it
-        const reused = await firstValueFrom(mint(tempoSigner)).catch((error: unknown) => error);
-        expect(isError(reused, 'CALL_EXCEPTION') && bridgeErrorName(reused.data)).toBe('ZeroMintAmount');
+        expect(await firstValueFrom(sent$(mint))).toEqual({
+            node: 'refused',
+            data: expect.objectContaining({ errorName: 'ZeroMintAmount' }),
+        });
         expect(await firstValueFrom(balance$(nETH, tempoSigner.address))).toBe(lockedBU);
     });
 
@@ -402,7 +408,9 @@ describe('Token bridge through the sdk on local Ethereum and Tempo nodes', () =>
 
         const mirror = await firstValueFrom(mirror$(USDC));
         expect(mirror).toBe(await NoriTempoTokenBridge__factory.connect(bridgeAddress, tempoProvider).mirrorOf(USDC));
-        expect(await firstValueFrom(mined$(mintERC20Call(bridgeAddress, witness, proofAvailable.proofQueueBatchIndex)))).toBe(1);
+        expect(
+            (await firstValueFrom(sent$(mintERC20Call(bridgeAddress, witness, proofAvailable.proofQueueBatchIndex)))).node
+        ).toBe('confirmed');
         expect(await firstValueFrom(mintedSoFar$(tempoSigner.address, USDC))).toBe(USDC_LOCKED);
         expect(await firstValueFrom(balance$(mirror, tempoSigner.address))).toBe(USDC_LOCKED);
     });
@@ -414,7 +422,9 @@ describe('Token bridge through the sdk on local Ethereum and Tempo nodes', () =>
         expect(witness.value.value).toBe(PAUSE_STATE_PAUSED);
 
         expect(await firstValueFrom(lastPauseApplied$(USDC))).toEqual({ applied: false });
-        expect(await firstValueFrom(mined$(applyPauseCall(bridgeAddress, witness, proofAvailable.proofQueueBatchIndex)))).toBe(1);
+        expect(
+            (await firstValueFrom(sent$(applyPauseCall(bridgeAddress, witness, proofAvailable.proofQueueBatchIndex)))).node
+        ).toBe('confirmed');
         const mirror = await firstValueFrom(mirror$(USDC));
         expect(await ITIP20__factory.connect(mirror, tempoProvider).paused()).toBe(true);
         expect(await firstValueFrom(lastPauseApplied$(USDC))).toEqual({

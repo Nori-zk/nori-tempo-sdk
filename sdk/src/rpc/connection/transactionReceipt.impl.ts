@@ -26,13 +26,15 @@ export const createTransactionReceiptMachine = (
     const newBlocks = createChainChangesMachine(connections[chain]);
     return startReadThroughConnectionsMachine(TransactionReceiptGraph, {
         connections,
-        read: (clients) =>
-            clients[chain]((provider) => transactionReceiptFrom(provider, transactionHash)).pipe(
-                map(([receipt]) => ({ receipt }))
+        read: (clients, followed) =>
+            clients[chain]((provider) => transactionReceiptFrom(provider, followed.transactionHash)).pipe(
+                map(([receipt]) => ({ transactionHash: followed.transactionHash, receipt }))
             ),
         refreshOn: ({ receipt }) => (receipt ? dueOn(NEVER) : changesOf$(newBlocks)),
         needs: [chain],
         backoff,
         owns: [newBlocks],
+        // The transaction it is made for is its initial state.
+        start: { node: 'loading', data: { transactionHash, receipt: undefined, failedReads: 0 } },
     });
 };

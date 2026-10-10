@@ -15,11 +15,6 @@ export { FeeTokenGraph, type FeeTokenState } from '../tokenBridge/feeToken.js';
 export { createFeeTokenMachine } from '../tokenBridge/feeToken.impl.js';
 
 // The token bridge's transactions on Tempo: each a call, sent through the user's wallet with
-// `createWalletTransactionMachine`, or by a signer of the app's own and followed with
-// `createTransactionReceiptMachine`.
-export {
-    applyPauseCall,
-    mintCall,
-    mintERC20Call,
-    type TokenBridgeCall,
-} from '../rpc/tempo/tokenBridgeTransactions.js';
+// `createWalletTransactionMachine`, or with a signer of the app's own with `createSignerTransactionMachine`;
+// `tokenBridgeInterface` names the bridge's refusals.
+export { applyPauseCall, mintCall, mintERC20Call, tokenBridgeInterface } from '../rpc/tempo/tokenBridgeTransactions.js';

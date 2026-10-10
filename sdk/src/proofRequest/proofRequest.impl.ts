@@ -1,4 +1,4 @@
-import { catchError, defer, EMPTY, filter, map, merge, type Observable, of, throwError, timer } from 'rxjs';
+import { catchError, EMPTY, filter, map, merge, type Observable, of, switchMap, throwError, timer } from 'rxjs';
 import { proofRequestSnapshots$ } from './proofRequestSnapshots.js';
 import { type ConnectedReadClients, type ProofRequestConnections } from './connectedRead.js';
 import {
@@ -13,6 +13,8 @@ import {
     startReadThroughConnectionsMachine,
     dueOn,
 } from '../rpc/connection/readThroughConnections.impl.js';
+import { type TransactionFollow, transactionFollowOf } from '../transaction/sentTransaction.js';
+import { DROPPED_AFTER_BLOCKS, dropped, replaced, transactionFollow$ } from '../transaction/sentTransaction.impl.js';
 import { withOutcome } from '../utils/machines.js';
 import { ProofRequestState } from './types.js';
 import { ProofRequestStateGraph, type ProofRequestStateNodeUnion } from './proofRequest.js';
@@ -27,8 +29,14 @@ export interface FollowedProofRequest {
     bridgeAddress: string;
 }
 
-/** Where a followed proof request is: still followed (`current`), or proven (`proofAvailable`). */
+/**
+ * A followed proof request: the transaction that enqueued it, that
+ * transaction as last read, and where the request is, still followed
+ * (`current`) or proven (`proofAvailable`).
+ */
 type FollowedSnapshot = {
+    proofRequestTxHash: string;
+    transaction: TransactionFollow;
     snapshot: Extract<ProofRequestStateNodeUnion, { node: 'current' | 'proofAvailable' }>['data']['snapshot'];
 };
 
@@ -41,16 +49,20 @@ const UNDETERMINED: UndeterminedProofRequestSnapshot = { state: ProofRequestStat
  * Starts following one Ethereum proof request until a committed proof queue
  * batch on Tempo covers it, reading through both connections. It looks the
  * request up at once, then reads it again every `pollIntervalMs` and on
- * every `recheckTrigger$` emission until its proof is available.
+ * every `recheckTrigger$` emission until its proof is available. While the
+ * transaction that enqueued it is not mined, each read follows that
+ * transaction, and it ends `transactionReplaced` or `transactionDropped`
+ * when the transaction never will be.
  *
  * @param connections The Ethereum and Tempo chains, with their running connectivity machines.
- * @param request The transaction that enqueued the request, and the addresses.
+ * @param request The transaction that enqueued the request (its starting data), and the addresses.
  * @param knownSnapshot Where the request is already known to be, to resume
  *   from there (`current`, or `proofAvailable` for a proven one); it is
  *   looked up from the transaction when omitted.
  * @param pollIntervalMs The delay between reads in ms (default: 15000).
  * @param recheckTrigger$ An extra read signal, e.g. bridge state changes from the websocket.
  * @param backoff How long a failed read waits before reading again.
+ * @param droppedAfterBlocks Blocks the node may not know the enqueuing transaction before it counts as dropped (default: 12).
  * @returns The running machine; its states carry the snapshot. Its controls:
  *   - `retry()`: reads again now, without waiting, while failed.
  *   - `close()`: moves the machine to `closed`.
@@ -61,16 +73,20 @@ export function createProofRequestStateMachine(
     knownSnapshot?: ProofRequestStateSnapshot,
     pollIntervalMs = 15_000,
     recheckTrigger$: Observable<unknown> = EMPTY,
-    backoff: ReadRetryBackoff = {}
+    backoff: ReadRetryBackoff = {},
+    droppedAfterBlocks = DROPPED_AFTER_BLOCKS
 ) {
+    const { proofQueueAddress, proofRequestTxHash, bridgeAddress } = request;
+
     /**
      * Looks the request up from the transaction that enqueued it.
      *
      * @param clients The clients to read through.
+     * @param txHash The transaction that enqueued it.
      * @returns Its snapshot, or `undetermined` while the transaction is not mined, once.
      */
-    const lookUp$ = (clients: ConnectedReadClients): Observable<FollowedSnapshot['snapshot']> =>
-        proofRequestStateSnapshot$(clients, request).pipe(
+    const lookUp$ = (clients: ConnectedReadClients, txHash: string): Observable<FollowedSnapshot['snapshot']> =>
+        proofRequestStateSnapshot$(clients, { proofQueueAddress, proofRequestTxHash: txHash, bridgeAddress }).pipe(
             catchError((error: unknown) =>
                 error instanceof ProofRequestTransactionNotMinedError ? of(UNDETERMINED) : throwError(() => error)
             )
@@ -88,34 +104,103 @@ export function createProofRequestStateMachine(
         { requestId, requestBlockNumber }: UnprocessedProofRequestSnapshot
     ): Observable<ProofRequestStateSnapshot> =>
         clients
-            .tempo((provider) =>
-                defer(() =>
-                    proofRequestSnapshots$(provider, [{ requestId, requestBlockNumber }], request.bridgeAddress)
-                )
-            )
+            .tempo((provider) => proofRequestSnapshots$(provider, [{ requestId, requestBlockNumber }], bridgeAddress))
             .pipe(map(([snapshot]) => snapshot));
+
+    /**
+     * Follows the enqueuing transaction, then looks the request up once it is mined.
+     *
+     * @param clients The clients to read through.
+     * @param followed The request as last read.
+     * @returns The request as this read finds it, once.
+     */
+    const determine$ = (clients: ConnectedReadClients, followed: FollowedSnapshot): Observable<FollowedSnapshot> =>
+        clients
+            .ethereum((provider) => transactionFollow$(provider, followed.transaction))
+            .pipe(
+                switchMap((transaction) =>
+                    transaction.receipt === undefined
+                        ? of({ ...followed, transaction, snapshot: UNDETERMINED })
+                        : lookUp$(clients, followed.proofRequestTxHash).pipe(
+                              map((snapshot) => ({ ...followed, transaction, snapshot }))
+                          )
+                )
+            );
+
+    /** The enqueuing transaction never mined, and never will. */
+    const transactionEnded = ({ snapshot, transaction }: FollowedSnapshot) =>
+        snapshot.state === ProofRequestState.Undetermined &&
+        (replaced(transaction) || dropped(transaction, droppedAfterBlocks));
 
     return startReadThroughConnectionsMachine(ProofRequestStateGraph, {
         connections,
-        read: (clients, { snapshot }: FollowedSnapshot) =>
-            (snapshot.state === ProofRequestState.Unprocessed ? readAgain$(clients, snapshot) : lookUp$(clients)).pipe(
-                map((next): FollowedSnapshot => ({ snapshot: next }))
-            ),
+        read: (clients, followed: FollowedSnapshot) =>
+            followed.snapshot.state === ProofRequestState.Unprocessed
+                ? readAgain$(clients, followed.snapshot).pipe(map((snapshot) => ({ ...followed, snapshot })))
+                : determine$(clients, followed),
         refreshOn: () => dueOn(merge(timer(pollIntervalMs), recheckTrigger$)),
-        // A read that finds the request proven moves to `proofAvailable`, not `current`.
-        arrivedElsewhere: proven,
+        // A read that finds the request proven, or its transaction ended, moves there, not to `current`.
+        arrivedElsewhere: (followed) => proven(followed) || transactionEnded(followed),
         backoff,
-        ownTransitions: (read$) => ({
-            proven: {
-                $: () => withOutcome(read$, 'succeeded').pipe(filter(({ value }) => proven(value))),
-                next: ({ value }: { value: FollowedSnapshot }) => value,
-            },
-        }),
-        // A known snapshot resumes from there instead of looking the request up; a proven one is done.
+        ownTransitions: (read$) => {
+            const read = withOutcome(read$, 'succeeded').pipe(map(({ value }) => value));
+            const ended = ({ proofRequestTxHash: txHash, transaction }: FollowedSnapshot) => ({
+                proofRequestTxHash: txHash,
+                transaction,
+            });
+            return {
+                proven: {
+                    $: () => read.pipe(filter(proven)),
+                    next: ({ proofRequestTxHash: txHash, snapshot }: FollowedSnapshot) => ({
+                        proofRequestTxHash: txHash,
+                        snapshot,
+                    }),
+                },
+                transactionReplaced: {
+                    $: () =>
+                        read.pipe(
+                            filter(
+                                ({ snapshot, transaction }) =>
+                                    snapshot.state === ProofRequestState.Undetermined && replaced(transaction)
+                            )
+                        ),
+                    next: ended,
+                },
+                transactionDropped: {
+                    $: () =>
+                        read.pipe(
+                            filter(
+                                ({ snapshot, transaction }) =>
+                                    snapshot.state === ProofRequestState.Undetermined &&
+                                    dropped(transaction, droppedAfterBlocks)
+                            )
+                        ),
+                    next: ended,
+                },
+            };
+        },
+        // The transaction that enqueued the request is its starting data. A known
+        // snapshot resumes from there instead of looking the request up; a proven one is done.
         start:
-            knownSnapshot &&
-            (knownSnapshot.state === ProofRequestState.ProofAvailable
-                ? { node: 'proofAvailable', data: { snapshot: knownSnapshot } }
-                : { node: 'current', data: { snapshot: knownSnapshot } }),
+            knownSnapshot === undefined
+                ? {
+                      node: 'loading',
+                      data: {
+                          proofRequestTxHash,
+                          transaction: transactionFollowOf(proofRequestTxHash),
+                          snapshot: UNDETERMINED,
+                          failedReads: 0,
+                      },
+                  }
+                : knownSnapshot.state === ProofRequestState.ProofAvailable
+                  ? { node: 'proofAvailable', data: { proofRequestTxHash, snapshot: knownSnapshot } }
+                  : {
+                        node: 'current',
+                        data: {
+                            proofRequestTxHash,
+                            transaction: transactionFollowOf(proofRequestTxHash),
+                            snapshot: knownSnapshot,
+                        },
+                    },
     });
 }

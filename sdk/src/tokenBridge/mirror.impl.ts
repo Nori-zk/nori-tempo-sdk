@@ -36,13 +36,15 @@ export const createMirrorMachine = (
     });
     return startReadThroughConnectionsMachine(MirrorGraph, {
         connections,
-        read: (clients) =>
+        read: (clients, held) =>
             clients
-                .tempo((provider) => mirror$(provider, bridgeAddress, ethToken))
-                .pipe(map((mirror) => ({ mirror }))),
+                .tempo((provider) => mirror$(provider, bridgeAddress, held.ethToken))
+                .pipe(map((mirror) => ({ ethToken: held.ethToken, mirror }))),
         refreshOn: ({ mirror }) => (mirror === undefined ? changesOf$(mirrorRegistered) : dueOn(NEVER)),
         needs: ['tempo'],
         backoff,
         owns: [mirrorRegistered],
+        // The ERC-20 is its starting data.
+        start: { node: 'loading', data: { ethToken, mirror: undefined, failedReads: 0 } },
     });
 };

@@ -54,12 +54,13 @@ const { nodes, edges } = healthCheckedOf({ wallet: noWallet });
  *   chain change. Declining (the wallet's user-rejected error, code 4001)
  *   moves to `switchDeclined`, which has no `switchToExpectedChain` edge, so
  *   the user is not asked again until they change chain themselves. A
- *   request the wallet fails for any other reason goes back to
- *   `wrongNetwork` with the wallet's error in `lastSwitchError`, and the app
- *   may ask again.
+ *   request the wallet fails for any other reason, or leaves unanswered for
+ *   `switchTimeoutMs`, goes back to `wrongNetwork` with the reason in
+ *   `lastSwitchError`, and the app may ask again.
  * - Any chain change, from any node with a wallet, checks again.
  * - The wallet's `disconnect` (it can reach no chain) moves to
- *   `unreachable`; its `connect` checks again at once.
+ *   `unreachable` from every node with a wallet; its `connect` checks again
+ *   at once.
  * - Going offline pauses everything in `offline`; coming back online checks
  *   at once.
  * - `closed` ends the machine from any node and completes its streams.
@@ -154,6 +155,11 @@ export const EthereumWalletGraph = define({
             to: 'wrongNetwork',
             on: 'switchRequestFailed.next',
         },
+        switchRequestTimedOut: {
+            from: 'askingToSwitchChain',
+            to: 'wrongNetwork',
+            on: 'switchTimedOut.next',
+        },
 
         disconnectedWhileChecking: {
             from: 'checking',
@@ -164,6 +170,32 @@ export const EthereumWalletGraph = define({
             from: 'ready',
             to: 'unreachable',
             on: 'walletDisconnected.next',
+        },
+        disconnectedOnWrongNetwork: {
+            from: 'wrongNetwork',
+            to: 'unreachable',
+            on: 'walletDisconnected.next',
+        },
+        disconnectedWhileAskingToSwitchChain: {
+            from: 'askingToSwitchChain',
+            to: 'unreachable',
+            on: 'walletDisconnected.next',
+        },
+        disconnectedAfterSwitchDeclined: {
+            from: 'switchDeclined',
+            to: 'unreachable',
+            on: 'walletDisconnected.next',
+        },
+
+        wentOfflineWhileAskingToSwitchChain: {
+            from: 'askingToSwitchChain',
+            to: 'offline',
+            on: 'networkWentOffline.next',
+        },
+        wentOfflineAfterSwitchDeclined: {
+            from: 'switchDeclined',
+            to: 'offline',
+            on: 'networkWentOffline.next',
         },
         reconnected: {
             from: 'unreachable',

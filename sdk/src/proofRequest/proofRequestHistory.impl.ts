@@ -48,9 +48,10 @@ export function createProofRequestHistoryMachine(
     const started = startReadThroughConnectionsMachine(ProofRequestHistoryGraph, {
         connections,
         // The page after the cursor held, appended to the requests loaded so far.
-        read: (clients, { loaded, cursor }) =>
-            fetchProofRequestHistoryPage$(clients, addresses, { ...query, after: cursor }).pipe(
+        read: (clients, { target, loaded, cursor }) =>
+            fetchProofRequestHistoryPage$(clients, addresses, { ...query, target, after: cursor }).pipe(
                 map((page) => ({
+                    target,
                     loaded: [...loaded, ...page.entries],
                     cursor: page.done ? undefined : page.cursor,
                 }))
@@ -62,9 +63,11 @@ export function createProofRequestHistoryMachine(
         ownTransitions: (read$) => ({
             lastPageArrived: {
                 $: () => withOutcome(read$, 'succeeded').pipe(filter(({ value }) => lastPage(value))),
-                next: ({ value }: { value: LoadedRequests }) => ({ loaded: value.loaded }),
+                next: ({ value }: { value: LoadedRequests }) => ({ target: value.target, loaded: value.loaded }),
             },
         }),
+        // The submitting address is its starting data.
+        start: { node: 'loading', data: { target: query.target, loaded: [], cursor: undefined, failedReads: 0 } },
     });
 
     return Object.assign(started, { loadMore: () => loadMore$.next() });

@@ -46,16 +46,17 @@ export function createLatestProofRequestsMachine(
      * Reads the newest `count` requests from `fromBlock` up to the latest block.
      *
      * @param clients The clients to read through.
+     * @param target The submitting address.
      * @param fromBlock The lowest block to read from.
      * @returns The newest requests and the block of the oldest one, once.
      */
-    const readNewest$ = (clients: ConnectedReadClients, fromBlock: number): Observable<NewestRequests> =>
+    const readNewest$ = (clients: ConnectedReadClients, target: string, fromBlock: number): Observable<NewestRequests> =>
         clients
             .ethereum((provider) => blockNumber$(provider, 'latest'))
             .pipe(
                 switchMap((toBlock) =>
                     fetchProofRequestHistoryPage$(clients, addresses, {
-                        target: query.target,
+                        target,
                         fromBlock,
                         toBlock,
                         order: 'desc',
@@ -63,6 +64,7 @@ export function createLatestProofRequestsMachine(
                         maxBlockRangePerQuery: query.maxBlockRangePerQuery,
                     }).pipe(
                         map(({ entries }) => ({
+                            target,
                             view: entries,
                             oldestBlock: entries.length > 0 ? entries[entries.length - 1].blockNumber : toBlock,
                         }))
@@ -70,15 +72,26 @@ export function createLatestProofRequestsMachine(
                 )
             );
 
-    /** Fewer requests than the view showed (up to `count`) means a reorg removed one. */
-    const requestsMissing = (value: NewestRequests, previous: NewestRequests, node: 'loading' | 'refreshing') =>
-        node === 'refreshing' && value.view.length < Math.min(query.count, previous.view.length);
+    /**
+     * A request the view showed is gone, so a reorg removed it: one not read
+     * again that the new view still reaches (it is not full, or the request
+     * is newer than its oldest). One pushed out by newer requests is not gone.
+     */
+    const requestsMissing = (value: NewestRequests, previous: NewestRequests, node: 'loading' | 'refreshing') => {
+        if (node !== 'refreshing') return false;
+        const read = new Set(value.view.map(({ requestId }) => requestId));
+        // The view is newest first: its last request is its oldest.
+        const oldestRead = value.view.length < query.count ? undefined : value.view[value.view.length - 1].requestId;
+        return previous.view.some(
+            ({ requestId }) => !read.has(requestId) && (oldestRead === undefined || requestId > oldestRead)
+        );
+    };
 
     return startReadThroughConnectionsMachine(LatestProofRequestsGraph, {
         connections,
         // A load reads from `fromBlock`; a refresh from the oldest block of the view it holds.
         read: (clients, previous, node) =>
-            readNewest$(clients, node === 'loading' ? query.fromBlock : previous.oldestBlock),
+            readNewest$(clients, previous.target, node === 'loading' ? query.fromBlock : previous.oldestBlock),
         refreshOn: () => dueOn(merge(timer(pollIntervalMs), recheckTrigger$)),
         arrivedElsewhere: requestsMissing,
         kind: 'logs',
@@ -93,9 +106,11 @@ export function createLatestProofRequestsMachine(
                 next: (
                     _missing: unknown,
                     _dest: unknown,
-                    { view, oldestBlock, failedReads }: NewestRequests & { failedReads: number }
-                ) => ({ view, oldestBlock, failedReads }),
+                    { target, view, oldestBlock, failedReads }: NewestRequests & { failedReads: number }
+                ) => ({ target, view, oldestBlock, failedReads }),
             },
         }),
+        // The submitting address is its starting data.
+        start: { node: 'loading', data: { target: query.target, view: [], oldestBlock: 0, failedReads: 0 } },
     });
 }

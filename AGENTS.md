@@ -188,11 +188,15 @@ jk89 was sad the agents ignored his abstraction and worked around it
 - A read tries once. Retrying belongs to the machine (`failedWhile…`,
   `retryDue`, `retry()`); a retry loop inside a read hides the failure, keeps
   the machine in `loading` and tells the transport late.
-- A transaction is a machine too: its own states in front (waiting for the
-  wallet, asking to sign, declined, failed), spreading
-  `readThroughConnectionsOf` for the receipt after it. Never wait for a
-  receipt inside a promise (`sent.wait()`); the receipt machine owns it. A
-  contract call is one `…Call` both paths use, never a send per signer.
+- A transaction is a machine too, made for one call (`{ to, data, value }`,
+  its starting data) and sent only on a send request from outside
+  (`send()`), gated on what sends it (`notReadyToSend` when it cannot). Both
+  paths spread `sentTransactionOf` (`transaction/sentTransaction.ts`) and add
+  their sending node (`askingToSign` for the wallet, `sending` for a
+  signer); the sent transaction is followed on the chain until it ends
+  `confirmed`, `reverted`, `replaced` or `dropped`. Never wait for a receipt
+  inside a promise (`sent.wait()`); the machine owns it. A contract call is
+  one `…Call` both paths use, never a send per signer.
 - Tests read a machine as a stream that ends: `waitForNode`, `nodesUntil`,
   `statesDuring`, or a `valueOnceRead$` helper typed by the graph. Never subscribe
   into an array a test inspects later, never `sleep` and check, never a
@@ -233,6 +237,21 @@ jk89 was sad the agents ignored his abstraction and worked around it
   `notLoggedIn`); it refuses when the outside saying no is a state of the
   domain. Without these, the dependency is handled in code around the
   graph, and the graph no longer describes what the machine does.
+- A machine has two environmental inputs (`start(entry, runningMachines,
+  initialNodeData)` and each transition's `$`):
+  - its initial state: what is static, known when the machine is made,
+    flows in as the starting node's data (`initialNodeData`), so the
+    machine's state shows it;
+  - `$`: what may or may not have happened yet (an outcome still to come,
+    another machine's state, the user, the chain).
+  Deferring a machine's creation is not a problem when it starts from an
+  input state and decides its outcome from that state and what arrives
+  through `$`: a transaction machine made for one call (what to send) waits
+  in `ready` for a send request (when to send, an event from outside, as
+  `payRequest` is), gated on the chain's connection, then takes the node's
+  answer (sent, refused or failed); a receipt machine made for one
+  transaction hash reads until it is mined. That input is its initial state, in the graph's data; never a
+  value captured in a closure, where the machine's state does not show it.
 - A transition's `$` is the external environment: "an Observable factory
   over the external environment", whose "emissions are outside the
   machine's control" (`clean/yaw/ystate/packages/ystate/README.md`, "Core
@@ -243,27 +262,18 @@ jk89 was sad the agents ignored his abstraction and worked around it
   (`deps.auth.state$`), and the inputs of a call. So:
   - External state belongs in the streams that feed `$`; the graph holds
     only what the machine itself decides.
-  - A machine exists before its work arrives, and the work's inputs arrive
-    through an edge's `$`. Payment sits in `checkout` from the start; `pay`
-    fires when `payRequest` emits, and `payRequest` carries the card, so
-    nothing is created late to hold the card
+  - Input that arrives during a machine's life comes through an edge's
+    `$`. Payment sits in `checkout` from the start; `pay` fires when
+    `payRequest` emits, and `payRequest` carries the card
     (`clean/yaw/ystate/packages/example/src/payment.ts`, or the studio's
     checkout workspace in
     `clean/yaw/ystate/packages/studio/src/app-root/default-workspaces.ts`).
-    A machine created per call with its inputs baked into its factory is
-    the opposite of this.
+    Input the machine is made with is its initial state instead (see the
+    two environmental inputs above).
   - Gating on another machine is also `$`: `pay` reads `deps.auth.state$`
     with `withLatestFrom`; when Auth is not `authenticated` its error edge
     goes to `notLoggedIn`, and `dismiss` brings it back to `checkout`. No
     helper and no spawned machine.
-- A machine is started by its owner, who closes it; ownership never
-  transfers (the README: `Basket.close().start('empty', { auth })`, and
-  stopping basket leaves auth running). A machine that needs data known
-  only at runtime is started by whoever has that data (the app, or a
-  `create…Machine`), never inside another machine's streams: no starting a
-  machine in a `$`, a `refreshOn` or a `defer`, and no helper that does it
-  for you. ystate has no `spawn()` on purpose. A reading machine's creator
-  starts the chain changes machine it gates on and passes it in `owns`.
 - The graph holds the machine's own domain state; the outside world is
   observed in the shape it has, like `temperature$` in the heater example.
   Holding the outside world outside the graph is the idiom, not a break of

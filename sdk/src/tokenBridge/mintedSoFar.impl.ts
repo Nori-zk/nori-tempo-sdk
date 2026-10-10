@@ -1,5 +1,5 @@
 import { zeroPadValue } from 'ethers';
-import { defer, map } from 'rxjs';
+import { map } from 'rxjs';
 import { type ProofRequestConnections } from '../proofRequest/connectedRead.js';
 import { changesOf$, createChainChangesMachine } from '../rpc/connection/chainChanges.impl.js';
 import {
@@ -40,19 +40,19 @@ export const createMintedSoFarMachine = (
     });
     return startReadThroughConnectionsMachine(MintedSoFarGraph, {
         connections,
-        read: (clients) =>
+        read: (clients, held) =>
             clients
                 .tempo((provider) =>
-                    defer(() =>
-                        ethToken === undefined
-                            ? mintedSoFar$(provider, bridgeAddress, recipient)
-                            : erc20MintedSoFar$(provider, bridgeAddress, ethToken, recipient)
-                    )
+                    held.ethToken === undefined
+                        ? mintedSoFar$(provider, bridgeAddress, held.recipient)
+                        : erc20MintedSoFar$(provider, bridgeAddress, held.ethToken, held.recipient)
                 )
-                .pipe(map((minted) => ({ minted }))),
+                .pipe(map((minted) => ({ recipient: held.recipient, ethToken: held.ethToken, minted }))),
         refreshOn: () => changesOf$(mintApplied),
         needs: ['tempo'],
         backoff,
         owns: [mintApplied],
+        // The recipient and the ERC-20 are its starting data.
+        start: { node: 'loading', data: { recipient, ethToken, minted: undefined, failedReads: 0 } },
     });
 };

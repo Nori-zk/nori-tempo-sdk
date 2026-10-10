@@ -39,14 +39,16 @@ export const createTokenBalanceMachine = (
     });
     return startReadThroughConnectionsMachine(TokenBalanceGraph, {
         connections,
-        read: (clients) =>
+        read: (clients, held) =>
             clients
-                .tempo((provider) => tokenBalance$(provider, token, account))
-                .pipe(map((balance) => ({ balance }))),
+                .tempo((provider) => tokenBalance$(provider, held.token, held.account))
+                .pipe(map((balance) => ({ token: held.token, account: held.account, balance }))),
         // Any transfer out of or into the account, a mint included.
         refreshOn: () => combineLatest([changesOf$(transfersOut), changesOf$(transfersIn)]),
         needs: ['tempo'],
         backoff,
         owns: [transfersOut, transfersIn],
+        // The token and the account are its starting data.
+        start: { node: 'loading', data: { token, account, balance: undefined, failedReads: 0 } },
     });
 };

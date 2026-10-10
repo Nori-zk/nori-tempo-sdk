@@ -35,13 +35,15 @@ export const createLastPauseAppliedMachine = (
     });
     return startReadThroughConnectionsMachine(LastPauseAppliedGraph, {
         connections,
-        read: (clients) =>
+        read: (clients, held) =>
             clients
-                .tempo((provider) => lastPauseApplied$(provider, bridgeAddress, ethToken))
-                .pipe(map((lastPauseApplied) => ({ lastPauseApplied }))),
+                .tempo((provider) => lastPauseApplied$(provider, bridgeAddress, held.ethToken))
+                .pipe(map((lastPauseApplied) => ({ ethToken: held.ethToken, lastPauseApplied }))),
         refreshOn: () => changesOf$(pauseApplied),
         needs: ['tempo'],
         backoff,
         owns: [pauseApplied],
+        // The ERC-20 is its starting data.
+        start: { node: 'loading', data: { ethToken, lastPauseApplied: undefined, failedReads: 0 } },
     });
 };

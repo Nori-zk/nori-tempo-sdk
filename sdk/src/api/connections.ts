@@ -47,13 +47,17 @@ export { withOutcome } from '../utils/machines.js';
 export { ChainChangesGraph, type ChainChangesState } from '../rpc/connection/chainChanges.js';
 export { changesOf$, createChainChangesMachine, type ChainChanges } from '../rpc/connection/chainChanges.impl.js';
 
-// One transaction sent through the user's wallet, then its receipt until mined.
+// One transaction, made for one call and sent on a send request, then followed until it ends: through the
+// user's wallet, or with a signer of the app's own (a key it holds). Both graphs spread `sentTransactionOf`.
+export { sentTransactionOf, type TransactionToSend } from '../transaction/sentTransaction.js';
+export { NotReadyToSendError, type SentTransaction, type TransactionCall } from '../transaction/sentTransaction.impl.js';
 export { WalletTransactionGraph, type WalletTransactionState } from '../rpc/connection/walletTransaction.js';
-export { createWalletTransactionMachine, type WalletCall } from '../rpc/connection/walletTransaction.impl.js';
-
-// One transaction sent with a signer of the app's own (a key it holds), then its receipt until mined.
+export { createWalletTransactionMachine } from '../rpc/connection/walletTransaction.impl.js';
 export { SignerTransactionGraph, type SignerTransactionState } from '../transaction/signerTransaction.js';
-export { createSignerTransactionMachine, type SignerCall } from '../transaction/signerTransaction.impl.js';
+export {
+    createSignerTransactionMachine,
+    type TransactionMachineOptions,
+} from '../transaction/signerTransaction.impl.js';
 
 // Each connection's status: one machine per connection over its transports.
 export { ConnectionStatusGraph, type ConnectionStatusState } from '../rpc/connection/connectionStatus.js';

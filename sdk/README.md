@@ -16,7 +16,7 @@ The witness hashing comes from `@nori-zk/ethereum-tempo-proof-queue-utils-glam`,
 The package has three entry points:
 
 - `@nori-zk/nori-bridge-tempo-sdk`: everything below;
-- `@nori-zk/nori-bridge-tempo-sdk/utils`: `stateOf$`, `dataOnEntry$`, `atNode`, `AsNodeData` and `StartedMachine`, for an app's own YState machines;
+- `@nori-zk/nori-bridge-tempo-sdk/utils`: `stateOf$`, `dataOnEntry$`, `atNode`, `AsNodeData`, `StartedMachine` and `GraphState`, for an app's own YState machines;
 - `@nori-zk/nori-bridge-tempo-sdk/program`: the Tempo contracts' ethers types, factories and ABIs (`NoriTempoTokenBridge__factory` and the rest of `@nori-zk/tempo-token-bridge`).
 
 ## How a proof request gets proven
@@ -71,11 +71,13 @@ Every value the SDK reads from the chains goes through the same states: the proo
 - `current` holds the value until a refresh is due: a new block, a log, a signal from Nori, a timer, or a call such as `loadMore()`, depending on the machine. What makes it due is followed from before each read starts, and the read waits until it is following (a chain trigger once it knows the block it starts from), so a change while the value is being read is not missed: it makes a refresh due as soon as the value arrives.
 - `refreshing` reads the value again while still holding it.
 - A read that fails to reach a connection reports it to that connection, which checks itself again, and the machine stays where it is until the check settles: a connection that turns out to be down is a lost connection; one that passes straight back means the read itself failed.
-- `waitingForConnectionWhileLoading` and `waitingForConnectionWhileRefreshing` name the chains (or the one transport, such as `ethereum.wallet`) they wait on in `data.waitingOn`, updated as they change, and read again once those can serve a read.
+- `waitingForConnectionWhileLoading` and `waitingForConnectionWhileRefreshing` name the chains (or the one transport, such as `ethereum.wallet`) they wait on in `data.waitingOn`, updated as they change, and read again once those can serve a read. A read waiting to follow its refresh trigger moves there as soon as a chain it needs cannot serve it.
 - `failedWhileLoading` and `failedWhileRefreshing` hold the error in `data.error` and read again by themselves after a wait that doubles with each failure in a row (`data.failedReads`); `retry()` reads again at once. A read that arrives resets `data.failedReads`.
 - `closed` is terminal.
 
 Nothing is a dead end: a lost connection is waited for, and a failure retries itself.
+
+A machine made for one thing holds that thing in its data from its first state on, so its state shows what it is about: a proof request's `proofRequestTxHash`, a witness's `proofAvailable`, a batch's `batch`, a receipt's `transactionHash`, a view's `target`, a balance's `token` and `account`. Contract addresses are the machine's configuration and stay outside its data.
 
 ## Connections
 
@@ -182,7 +184,7 @@ The user's wallet, found through EIP-6963 (with the older `window.ethereum` as a
 | `unreachable`         | The wallet did not answer, or disconnected; it is asked again after a wait.          | Wait; the wallet's status is `down`.                                                                  |
 | `offline`             | The device is offline.                                                               | Wait.                                                                                                 |
 
-A switch request the wallet fails for another reason (e.g. it doesn't know the chain) returns to `wrongNetwork` with the wallet's error in `data.lastSwitchError`. Any chain change, in any state with a wallet, checks again.
+A switch request the wallet fails for another reason (e.g. it doesn't know the chain), or leaves unanswered for `switchTimeoutMs` (60 s by default), returns to `wrongNetwork` with the reason in `data.lastSwitchError`, and the app may ask again. Any chain change, in any state with a wallet, checks again. The wallet's `disconnect` moves every state with a wallet to `unreachable`, and going offline moves each of them to `offline`.
 
 ```ts
 ethereum.wallet.connection?.state$.subscribe(({ node }) => {
@@ -212,8 +214,8 @@ Another failure of the request (e.g. one already pending) goes back to `current`
 
 Whether a chain has changed: a new block, or a log matching a filter. It is what the machines read again on, and an app's own machine can too. `createChainChangesMachine(connections.tempo, { address, topics })` (or `createChainChangesMachine(connections.ethereum)` for every new block) starts one; whoever starts it owns it and closes it. A reading machine gates on it with `changesOf$(changes)`, which emits once the machine follows the chain, then once per change, and starts nothing.
 
-- `subscribed`: subscribed on the first transport in the chain's subscriptions order that is usable and serves the subscription; the node's acknowledgement (`acknowledged`) is where it starts following, and each push after it is a change. A transport that refuses the subscription (a wallet without `eth_subscribe`) is recorded in `unsupported` and passed over.
-- `polling`: no transport can subscribe; it polls the calls order every interval (5 s by default). `lastBlock` is the last block polled; the first poll, sent at once, is where it starts following. After a gap longer than one log query it moves on to the latest block and counts one change instead of reading the gap.
+- `subscribed`: subscribed on the first transport in the chain's subscriptions order that is usable and serves the subscription; the node's acknowledgement (`acknowledged`) is where it starts following, and each push after it is a change. A transport that refuses the subscription (a wallet without `eth_subscribe`, a node refusing the filter) is recorded in `unsupported` and passed over (`subscriptionRefused`). A subscription that ends any other way is lost (`subscriptionLost`): it polls, holding the transport in `lostOn`, and subscribes on that transport again once it has been unusable and is usable again; another usable transport is subscribed on at once.
+- `polling`: no transport can subscribe; it polls the calls order every interval (5 s by default), and waits in `polling` while no transport in that order can take a call. `lastBlock` is the last block polled; the first poll, sent at once, is where it starts following. After a gap longer than one log query it moves on to the latest block and counts one change instead of reading the gap.
 - `pollFailed`: a poll failed; it polls again after the interval, or subscribes once a transport can.
 - Moving between subscribing and polling counts a change, as one may fall between the two.
 
@@ -262,7 +264,7 @@ They only exist on Nori's websocket, so they have no polling; its state, timings
 
 ![Transaction receipt graph](src/rpc/connection/TransactionReceiptGraph.svg)
 
-`createTransactionReceiptMachine({ ethereum, tempo }, chain, transactionHash)` reads a transaction's receipt through `chain` (`'ethereum'` or `'tempo'`) and reads it again on each new block of that chain until the transaction is mined. `current` holds `data.receipt`: `undefined` until mined, then `{ transactionHash, blockNumber, status }`, which is not read again. On Tempo a mined transaction is final.
+`createTransactionReceiptMachine({ ethereum, tempo }, chain, transactionHash)` reads a transaction's receipt through `chain` (`'ethereum'` or `'tempo'`) and reads it again on each new block of that chain until the transaction is mined. Every state holds the transaction in `data.transactionHash`; `current` holds `data.receipt`: `undefined` until mined, then `{ transactionHash, blockNumber, status }`, which is not read again. On Tempo a mined transaction is final. A transaction the app sends itself is followed by its transaction machine instead (see [Minting and pausing on Tempo](#minting-and-pausing-on-tempo)), which also tells a replaced or dropped transaction.
 
 ## Following one proof request
 
@@ -274,6 +276,11 @@ They only exist on Nori's websocket, so they have no polling; its state, timings
 - `unprocessed`: the bridge has not proven it yet. It is read again every poll interval and on every recheck signal, such as Nori's stage moving on.
 
 A read that finds a committed proof queue batch covering the request moves to the terminal node `proofAvailable`. Its `data.snapshot` carries that batch: `proofQueueBatchIndex`, `tempoBlockNumber` (the Tempo block whose `update` committed it), its root, cursors and output blocks, and the request's `indexInBatch`. Batches are append-only, so it is never read again.
+
+Every state holds the enqueuing transaction's hash in `data.proofRequestTxHash`. While the request is `undetermined`, each read also follows that transaction (`data.transaction`): its sender and nonce once the node knows it, the sender's mined nonce, then its receipt. A transaction that will never be mined ends the machine in a terminal node, as the request was never enqueued:
+
+- `transactionReplaced`: the sender's mined nonce moved past the transaction's own with no receipt for it, so another transaction took its nonce.
+- `transactionDropped`: the node has not known the transaction for `droppedAfterBlocks` blocks (12 by default, the machine's last argument).
 
 Lost connections and failed reads are the waiting and failed states above. To resume a request whose snapshot the app already knows, pass it as the third argument: an `undetermined` or `unprocessed` one starts in `current`, a proven one in `proofAvailable`, instead of looking the request up.
 
@@ -343,7 +350,7 @@ Nori creates a job on each Ethereum finality transition, one epoch (`ETHEREUM_EP
 
 `createProofQueueBatchesMachine` keeps a live view of the bridge's newest proof queue batches and the requests no batch covers yet, for every submitting address or one (`target`). The view, `data.view`, holds `batches` (newest first, each with the target's request ids in it as `matching`), `waiting` (oldest first), `batchCount`, `queueCursor`, and Ethereum's `finalizedBlock` and `latestBlock`.
 
-The bridge's state and Ethereum's blocks come from their machines, which the app passes in (`sources`) and can share with other views. The view reads once both are `current`, fails while either has failed, and waits while either waits for its connection. It refreshes when the bridge's batch count or queue cursor changes, on each Ethereum block past the view, when a source waits or fails, and on each recheck signal.
+The bridge's state and Ethereum's blocks come from their machines, which the app passes in (`sources`) and can share with other views. The view stays in `loading` until both hold a value, then reads; a source that has failed fails the read. Like every reading machine, it waits for its own chains in `waitingForConnectionWhile…`. It refreshes when the bridge's batch count or queue cursor changes, on each Ethereum block past the view, when a source waits or fails, and on each recheck signal. `data.target` is the submitting address it is filtered on, its starting data.
 
 `sortWaitingProofRequests(waiting, finalizedBlock, job?)` sorts the waiting requests into three sets, each oldest first: those whose block is not finalized yet, those finalized and scheduled for a later job, and those in the job Nori is running now. The first two come from Ethereum and Tempo alone. Telling the job Nori is running apart from the later ones needs Nori's `state.bridge`; without it, every finalized request is scheduled.
 
@@ -426,7 +433,7 @@ const latestProofRequests = createLatestProofRequestsMachine(
 );
 ```
 
-It shows the newest `count` requests in `data.view` and keeps them current: new requests enter at the top, and requests move from `unprocessed` to `proofAvailable` as the bridge commits their batches. A request that an Ethereum reorg removes leaves the view (`requestDroppedByReorg`), which loads again from `fromBlock` and refills from older blocks, keeping the view on screen meanwhile. It never ends on its own.
+It shows the newest `count` requests in `data.view` and keeps them current: new requests enter at the top, and requests move from `unprocessed` to `proofAvailable` as the bridge commits their batches. A request the view showed that a read no longer finds, by its id, was removed by an Ethereum reorg (`requestDroppedByReorg`): the view loads again from `fromBlock` and refills from older blocks, keeping the view on screen meanwhile. A request pushed out of the view by newer ones is not one of them. It never ends on its own.
 
 ## An app's own values
 
@@ -457,47 +464,63 @@ const tokenSymbol = startReadThroughConnectionsMachine(TokenSymbolGraph, {
 
 ## Minting and pausing on Tempo
 
-The token bridge is built on the queue: a deposit locked in `NoriTokenBridge` on Ethereum, ETH (`lockTokens`) or an ERC-20 (`lockERC20`), is a proof request whose leaf commits to `sha256` of the Tempo recipient's address, and `syncPause` makes an ERC-20's pause state one too. Once the request's snapshot is `proofAvailable`, its witness machine's `verifiedWitness` is its witness in the shape the Tempo bridge takes, and the recipient mints with it: `mintCall` for nETH, `mintERC20Call` for the ERC-20's TIP-20 mirror. Anyone applies a proven pause state to the mirror with `applyPauseCall`. Each is a call, given who signs it, that sends one Tempo transaction; the signer pays the fee in its fee token.
+The token bridge is built on the queue: a deposit locked in `NoriTokenBridge` on Ethereum, ETH (`lockTokens`) or an ERC-20 (`lockERC20`), is a proof request whose leaf commits to `sha256` of the Tempo recipient's address, and `syncPause` makes an ERC-20's pause state one too. Once the request's snapshot is `proofAvailable`, its witness machine's `verifiedWitness` is its witness in the shape the Tempo bridge takes, and the recipient mints with it: `mintCall` for nETH, `mintERC20Call` for the ERC-20's TIP-20 mirror. Anyone applies a proven pause state to the mirror with `applyPauseCall`. Each returns the call as data, `{ to, data, value }`, which a transaction machine sends as one Tempo transaction; the sender pays the fee in its fee token.
 
-### Sending a transaction through the user's wallet
+### Sending a transaction
 
 ![Wallet transaction graph](src/rpc/connection/WalletTransactionGraph.svg)
 
-`createWalletTransactionMachine(connections, chain, call)` sends one transaction through the user's wallet on `chain`, then reads its receipt until it is mined:
+![Signer transaction graph](src/transaction/SignerTransactionGraph.svg)
 
-- `waitingForWallet`: the wallet is not ready to sign (none chosen, on another chain, unreachable); it asks once the wallet is ready.
-- `askingToSign`: the wallet shows the transaction. Signed, it moves on to the receipt; the user saying no is `declined`; the wallet or the contract refusing it, or the wallet dropping while asking, is `sendFailed` with the error in `data.error`.
-- `declined` and `sendFailed` ask again only on the machine's `send()`: a request the wallet may still hold is never sent twice by itself.
-- From `loading` on it is the receipt, read through the chain's connection and again on each new block until mined: `current` holds `data.receipt`, whose `status` is 1 for success and 0 for a revert.
+A transaction is a machine made for one call, which it holds as its starting data, and sent only when the app asks. `createWalletTransactionMachine(connections, chain, call, options?)` sends it through the user's wallet on `chain`; `createSignerTransactionMachine(connections, chain, signer, call, options?)` sends it with a signer of the app's own, such as an ethers `Wallet`. Both graphs spread the same shape, `sentTransactionOf`, and add the node that sends:
+
+- `ready` holds the transaction in `data.transaction` until the app calls `send()`.
+- A send request while the wallet (or, for a signer, the chain's connection) cannot send moves to `notReadyToSend`, naming what it waits on in `data.waitingOn` (`['tempo.wallet']`, `['tempo']`). It goes back to `ready` once that can send, or on `dismiss()`, and never sends by itself.
+- `askingToSign` (the wallet shows the transaction) or `sending` (the signer sends it): one request per entry. Sent, it moves on to `loading` with `data.transactionHash`, `data.from` and the nonce in `data.transaction.nonce`. The user saying no in their wallet is `declined`. The contract reverting it at gas estimation is `refused`, with the revert's name in `data.errorName` (e.g. `PauseNotNewer`) when the machine is given the contract's ABI as `options.errors`. Anything else, or the wallet dropping while asking, is `sendFailed` with `data.error`.
+- `declined`, `refused` and `sendFailed` show the outcome until the next `send()`, which goes through the same check as from `ready`.
+- From `loading` on it is followed through the chain's connection on each new block: each read reads the sender's mined nonce, then the receipt, then whether the node knows the transaction. `current` holds it sent and not mined yet.
+- It ends `confirmed` (mined, `data.receipt.status` 1) or `reverted` (mined, status 0), each with `data.receipt`; or `replaced`, when the sender's mined nonce moved past the transaction's own with no receipt for it; or `dropped`, when the node has not known it for `options.droppedAfterBlocks` blocks (12 by default). `dropped` accepts `send()` again: the signer sends with the dropped transaction's nonce, so only one of the two can land; a wallet picks its own nonce.
+- `confirmed`, `reverted`, `replaced` and `closed` are terminal.
+
+A send again whose nonce the node still holds pending is refused by the node, and `sendFailed` says so. Tempo refuses any transaction carrying a value, so a call with a `value` on Tempo throws a `RangeError` when the machine is made.
 
 ```ts
-import { combineLatest, switchMap } from 'rxjs';
-import { createWalletTransactionMachine, mintCall } from '@nori-zk/nori-bridge-tempo-sdk';
+import { createWalletTransactionMachine, mintCall, tokenBridgeInterface } from '@nori-zk/nori-bridge-tempo-sdk';
 
-// proofAvailable$ and verifiedWitness$: the lock's snapshot and witness, from their machines as above.
-const minting$ = combineLatest([proofAvailable$, verifiedWitness$]).pipe(
-    switchMap(
-        ([proofAvailable, witness]) =>
-            createWalletTransactionMachine(
-                { ethereum, tempo },
-                'tempo',
-                mintCall(bridgeAddress, witness, proofAvailable.proofQueueBatchIndex)
-            ).state$
-    )
+// witness and proofQueueBatchIndex: the lock's verified witness and batch, from their machines as above.
+const minting = createWalletTransactionMachine(
+    { ethereum, tempo },
+    'tempo',
+    mintCall(bridgeAddress, witness, proofQueueBatchIndex),
+    { errors: tokenBridgeInterface }
 );
+
+mintButton.onclick = () => minting.send();
+minting.state$.subscribe(({ node, data }) => {
+    if (node === 'notReadyToSend') console.log('Connect your wallet to Tempo first.');
+    if (node === 'refused') console.log(`The bridge refused it: ${data.errorName}`);
+    if (node === 'confirmed') console.log('Minted.');
+});
 ```
 
-A signer of the app's own, such as a private key, sends the call itself, and `createTransactionReceiptMachine(connections, 'tempo', transactionHash)` follows its receipt:
+A signer of the app's own sends the same way:
 
 ```ts
-const receipt$ = mintCall(bridgeAddress, witness, proofQueueBatchIndex)(signer).pipe(
-    switchMap((sent) => createTransactionReceiptMachine({ ethereum, tempo }, 'tempo', sent.hash).state$)
+import { applyPauseCall, createSignerTransactionMachine, tokenBridgeInterface } from '@nori-zk/nori-bridge-tempo-sdk';
+
+const pausing = createSignerTransactionMachine(
+    { ethereum, tempo },
+    'tempo',
+    signer,
+    applyPauseCall(bridgeAddress, pauseWitness, proofQueueBatchIndex),
+    { errors: tokenBridgeInterface }
 );
+pausing.send();
 ```
 
 ### The token bridge's values
 
-The token bridge's values on Tempo are machines, each read at once and kept current; `current` holds the value:
+The token bridge's values on Tempo are machines, each read at once and kept current; `current` holds the value. Each holds the account, recipient or token it is made for in its data from its first state on.
 
 | Machine | Holds | Reads again on |
 | --- | --- | --- |
@@ -507,13 +530,33 @@ The token bridge's values on Tempo are machines, each read at once and kept curr
 | `createTokenBalanceMachine(connections, token, account)` | `balance`: a TIP-20 balance (nETH, a mirror, a fee token) | the token's `Transfer` out of or into the account, a mint included |
 | `createFeeTokenMachine(connections, account)` | `feeToken`: the fee token the account chose, `undefined` when none | the fee manager's `UserTokenSet` for the account |
 
-| Calls (Tempo) |
+#### Minted so far
+
+![Minted so far graph](src/tokenBridge/MintedSoFarGraph.svg)
+
+#### An ERC-20's mirror
+
+![Mirror graph](src/tokenBridge/MirrorGraph.svg)
+
+#### The last pause applied
+
+![Last pause applied graph](src/tokenBridge/LastPauseAppliedGraph.svg)
+
+#### A token balance
+
+![Token balance graph](src/tokenBridge/TokenBalanceGraph.svg)
+
+#### The fee token
+
+![Fee token graph](src/tokenBridge/FeeTokenGraph.svg)
+
+| Calls (Tempo), each `{ to, data, value }` |
 | --- |
 | `mintCall(bridgeAddress, depositWitness, proofQueueBatchIndex)` |
 | `mintERC20Call(bridgeAddress, depositWitness, proofQueueBatchIndex)` |
 | `applyPauseCall(bridgeAddress, pauseWitness, proofQueueBatchIndex)` |
 
-Minting is delta-based: a deposit's leaf carries what was locked so far, and the bridge mints what was not yet minted; minting again with nothing new locked reverts with `ZeroMintAmount`. `applyPause` accepts only a batch newer than the mirror's last pause applied. A transaction that reverts after it was sent is mined with `receipt.status` 0; one the contract refuses beforehand fails to send with the contract's error from ethers' gas estimate (`sendFailed` through the wallet).
+Minting is delta-based: a deposit's leaf carries what was locked so far, and the bridge mints what was not yet minted; minting again with nothing new locked is refused with `ZeroMintAmount`. `applyPause` accepts only a batch newer than the mirror's last pause applied. A transaction that reverts after it was sent ends `reverted`; one the contract refuses at gas estimation ends `refused`, named through `tokenBridgeInterface`.
 
 ## Development
 

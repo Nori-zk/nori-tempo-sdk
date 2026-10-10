@@ -28,7 +28,7 @@ class FakeWallet implements Eip1193EventProvider {
     blockNumber = 1;
     answers = true;
     switchRequests = 0;
-    onSwitchRequest: 'accept' | 'decline' | 'fail' = 'accept';
+    onSwitchRequest: 'accept' | 'decline' | 'fail' | 'ignore' = 'accept';
     private listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 
     constructor(readonly info: WalletInfo) {}
@@ -47,6 +47,7 @@ class FakeWallet implements Eip1193EventProvider {
         }
         if (method === 'wallet_switchEthereumChain') {
             this.switchRequests++;
+            if (this.onSwitchRequest === 'ignore') return new Promise(() => undefined);
             if (this.onSwitchRequest === 'decline') {
                 throw Object.assign(new Error('User rejected the request.'), {
                     code: USER_REJECTED_REQUEST,
@@ -103,8 +104,8 @@ const walletInfo = (name: string): WalletInfo => ({
     rdns: `io.${name.toLowerCase()}`,
 });
 
-/** Starts the wallet machine over its own announcement target and network. */
-function startWallet() {
+/** Starts the wallet machine over its own announcement target and network, with a switch request's timeout. */
+function startWallet(switchTimeoutMs?: number) {
     const walletEvents = new EventTarget();
     const network$ = new BehaviorSubject<{ node: 'online' | 'offline' }>({
         node: 'online',
@@ -114,6 +115,7 @@ function startWallet() {
             ...FAST_TIMINGS,
             expectedChainId: EXPECTED_CHAIN_ID,
             walletSearchMs: 30,
+            switchTimeoutMs,
             walletEvents,
             injectedProvider: undefined,
         },
@@ -310,6 +312,72 @@ describe('Ethereum wallet machine', () => {
         expect(offline.data).toEqual({ wallet: metamask.info });
         network$.next({ node: 'online' });
         await waitForNode(connection, 'ready');
+        close();
+    });
+
+    test('a switch request left unanswered returns to the other chain after its timeout, and may be asked again', async () => {
+        const { connection, walletEvents, switchToExpectedChain, close } = startWallet(50);
+        const metamask = new FakeWallet(walletInfo('MetaMask'));
+        metamask.onSwitchRequest = 'ignore';
+        metamask.announceOn(walletEvents);
+        await waitForNode(connection, 'wrongNetwork');
+
+        const moves = nodesUntil(connection, 'wrongNetwork');
+        switchToExpectedChain();
+        expect(await moves).toEqual(['askingToSwitchChain', 'wrongNetwork']);
+        const latest = await waitForNode(connection, 'wrongNetwork');
+        expect(latest.data).toEqual(expect.objectContaining({ lastSwitchError: expect.stringContaining('within 50 ms') }));
+
+        metamask.onSwitchRequest = 'accept';
+        switchToExpectedChain();
+        await waitForNode(connection, 'ready');
+        close();
+    });
+
+    test('a disconnect on the other chain, while asking to switch or after a declined switch, moves to unreachable', async () => {
+        const { connection, walletEvents, switchToExpectedChain, close } = startWallet(60_000);
+        const metamask = new FakeWallet(walletInfo('MetaMask'));
+        metamask.announceOn(walletEvents);
+        await waitForNode(connection, 'wrongNetwork');
+        metamask.emit('disconnect');
+        await waitForNode(connection, 'unreachable');
+
+        metamask.emit('connect', { chainId: toQuantity(OTHER_CHAIN_ID) });
+        await waitForNode(connection, 'wrongNetwork');
+        metamask.onSwitchRequest = 'ignore';
+        switchToExpectedChain();
+        await waitForNode(connection, 'askingToSwitchChain');
+        metamask.emit('disconnect');
+        await waitForNode(connection, 'unreachable');
+
+        metamask.emit('connect', { chainId: toQuantity(OTHER_CHAIN_ID) });
+        await waitForNode(connection, 'wrongNetwork');
+        metamask.onSwitchRequest = 'decline';
+        switchToExpectedChain();
+        await waitForNode(connection, 'switchDeclined');
+        metamask.emit('disconnect');
+        await waitForNode(connection, 'unreachable');
+        close();
+    });
+
+    test('going offline while asking to switch or after a declined switch pauses it', async () => {
+        const { connection, walletEvents, network$, switchToExpectedChain, close } = startWallet(60_000);
+        const metamask = new FakeWallet(walletInfo('MetaMask'));
+        metamask.onSwitchRequest = 'ignore';
+        metamask.announceOn(walletEvents);
+        await waitForNode(connection, 'wrongNetwork');
+        switchToExpectedChain();
+        await waitForNode(connection, 'askingToSwitchChain');
+        network$.next({ node: 'offline' });
+        await waitForNode(connection, 'offline');
+
+        metamask.onSwitchRequest = 'decline';
+        network$.next({ node: 'online' });
+        await waitForNode(connection, 'wrongNetwork');
+        switchToExpectedChain();
+        await waitForNode(connection, 'switchDeclined');
+        network$.next({ node: 'offline' });
+        await waitForNode(connection, 'offline');
         close();
     });
 });

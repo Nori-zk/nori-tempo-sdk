@@ -4,6 +4,7 @@ import type { ProofRequestHistoryEntry } from './fetchProofRequestHistory.js';
 import type { ProofRequestHistoryCursor } from '../rpc/eth/proofRequestsByTarget.js';
 
 const { nodes, edges } = readThroughConnectionsOf({
+    target: '',
     loaded: [] as ProofRequestHistoryEntry[],
     cursor: undefined as ProofRequestHistoryCursor | undefined,
 });
@@ -11,6 +12,7 @@ const { nodes, edges } = readThroughConnectionsOf({
 /**
  * Pages through a submitting address's proof requests: the requests loaded
  * so far, read through the connections (`readThroughConnectionsOf`).
+ * `target`, the submitting address, is its starting data.
  *
  * - `loading` reads the first page; `current` holds the requests loaded so
  *   far and the cursor after them; `loadMore` refreshes them with the next
@@ -25,7 +27,7 @@ const { nodes, edges } = readThroughConnectionsOf({
 export const ProofRequestHistoryGraph = define({
     nodes: {
         ...nodes,
-        allLoaded: { loaded: [] as ProofRequestHistoryEntry[] },
+        allLoaded: { target: '', loaded: [] as ProofRequestHistoryEntry[] },
     },
     edges: {
         ...edges,

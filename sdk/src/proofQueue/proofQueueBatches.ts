@@ -47,8 +47,12 @@ export const EMPTY_PROOF_QUEUE_BATCHES_VIEW: ProofQueueBatchesView = {
  * batch count or queue cursor changes, on each Ethereum block past the
  * view's latest block, when a source waits for a connection or fails, and
  * on each recheck signal (e.g. Nori's stage changing on its websocket).
+ * `target`, the submitting address it is filtered on (`undefined` for every
+ * address), is its starting data.
  */
-export const ProofQueueBatchesGraph = define(readThroughConnectionsOf({ view: EMPTY_PROOF_QUEUE_BATCHES_VIEW }));
+export const ProofQueueBatchesGraph = define(
+    readThroughConnectionsOf({ target: undefined as string | undefined, view: EMPTY_PROOF_QUEUE_BATCHES_VIEW })
+);
 
 /** The live view's state: a node of the graph and its data. */
 export type ProofQueueBatchesState = StateUnion<typeof ProofQueueBatchesGraph.nodes>;

@@ -151,7 +151,7 @@ describe('proof request state machine', () => {
 
         const states = await statesDuring(proofRequestState, 100);
         expect(new Set(states.map(({ node }) => node))).toEqual(new Set(['proofAvailable']));
-        expect(states[0].data).toEqual({ snapshot: known });
+        expect(states[0].data).toEqual({ proofRequestTxHash: follow(6n).proofRequestTxHash, snapshot: known });
         close();
     });
 
@@ -182,6 +182,54 @@ describe('proof request state machine', () => {
         network$.next('online');
         await waitForNode(proofRequestState, 'proofAvailable');
         proofRequestState.close();
+        close();
+    });
+
+    test("an enqueuing transaction whose nonce its sender's mined nonce moved past ends transactionReplaced", async () => {
+        const { ethereum, connections, close } = await setUp(200, 8);
+        const enqueuing = transactionHashOf(99n);
+        ethereum.state.pending.set(enqueuing, { from: TARGET_A, nonce: 3 });
+        ethereum.state.minedNonces.set(TARGET_A, 3);
+        const proofRequestState = createProofRequestStateMachine(
+            connections,
+            { ...follow(0n), proofRequestTxHash: enqueuing },
+            undefined,
+            50,
+            undefined,
+            FAST_TIMINGS
+        );
+
+        await waitForSnapshot(proofRequestState, ProofRequestState.Undetermined);
+        ethereum.state.pending.delete(enqueuing);
+        ethereum.state.minedNonces.set(TARGET_A, 4);
+        const replaced = await waitForNode(proofRequestState, 'transactionReplaced');
+        expect(replaced.data).toEqual({
+            proofRequestTxHash: enqueuing,
+            transaction: expect.objectContaining({ from: TARGET_A, nonce: 3, minedNonce: 4 }),
+        });
+        close();
+    });
+
+    test('an enqueuing transaction the node has not known for the blocks allowed ends transactionDropped', async () => {
+        const { ethereum, connections, close } = await setUp(200, 8);
+        const enqueuing = transactionHashOf(99n);
+        const proofRequestState = createProofRequestStateMachine(
+            connections,
+            { ...follow(0n), proofRequestTxHash: enqueuing },
+            undefined,
+            50,
+            undefined,
+            FAST_TIMINGS,
+            2
+        );
+
+        await waitForSnapshot(proofRequestState, ProofRequestState.Undetermined);
+        ethereum.state.latestBlock += 2;
+        const dropped = await waitForNode(proofRequestState, 'transactionDropped');
+        expect(dropped.data).toEqual({
+            proofRequestTxHash: enqueuing,
+            transaction: expect.objectContaining({ unknownSinceBlock: 200, readAtBlock: 202 }),
+        });
         close();
     });
 });

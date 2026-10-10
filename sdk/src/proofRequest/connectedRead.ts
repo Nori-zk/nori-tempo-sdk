@@ -195,6 +195,24 @@ export function bothReady$(
 }
 
 /**
+ * Emits once some needs of a read cannot serve it, naming them: at once if
+ * some already cannot.
+ *
+ * @param connections The two chains.
+ * @param needs What the read needs (default: both chains).
+ * @returns The needs that cannot serve a read, once.
+ */
+export function needsNotReady$(
+    connections: ProofRequestConnections,
+    needs: ReadNeed[] = BOTH_CHAINS
+): Observable<ReadNeed[]> {
+    return notReady$(connections, false, needs).pipe(
+        filter((names) => names.length > 0),
+        take(1)
+    );
+}
+
+/**
  * The needs a waiting machine waits on, each time the set changes while
  * some still cannot serve a read. The set the machine entered with is not
  * repeated: the first emission, the set as it stands when subscribed, is

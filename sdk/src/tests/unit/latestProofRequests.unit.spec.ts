@@ -130,6 +130,29 @@ describe('latest proof requests machine', () => {
         close();
     });
 
+    test('a request a reorg removed is noticed by its id when a new request keeps the view the same length', async () => {
+        const requests = createRequests();
+        const { connections, close } = await setUp(requests, 40);
+        const latestProofRequests = createLatestProofRequestsMachine(
+            connections,
+            addresses,
+            { target: TARGET_A, fromBlock: 0, count: 3 },
+            50,
+            undefined,
+            FAST_TIMINGS
+        );
+        await currentWith(latestProofRequests, '38:batch9,36:batch9,34:batch8');
+        requests.splice(
+            requests.findIndex((request) => request.requestId === 36n),
+            1
+        );
+        requests.push({ requestId: 40n, blockNumber: 395, target: TARGET_A });
+        await waitForNode(latestProofRequests, 'loading');
+        await currentWith(latestProofRequests, '40:unprocessed,38:batch9,34:batch8');
+        latestProofRequests.close();
+        close();
+    });
+
     test('going offline keeps the view and resumes refreshing when back online', async () => {
         const { connections, network$, close } = await setUp(
             createRequests(),

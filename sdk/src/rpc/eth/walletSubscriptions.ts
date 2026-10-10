@@ -1,10 +1,10 @@
 import { filter, map, Observable } from 'rxjs';
 import { messageOf } from '../../utils/messageOf.js';
-import { type SubscriptionEvent } from '../connection/jsonRpcTopic.js';
+import { type SubscriptionEvent, SubscriptionRefusedError } from '../connection/jsonRpcTopic.js';
 import { type Eip1193EventProvider } from './eip1193.js';
 
 /** Thrown when a wallet does not serve `eth_subscribe`; subscriptions move to the next transport. */
-export class WalletSubscriptionUnsupportedError extends Error {
+export class WalletSubscriptionUnsupportedError extends SubscriptionRefusedError {
     constructor(readonly cause: unknown) {
         super(`The wallet does not serve eth_subscribe: ${messageOf(cause)}`);
         this.name = 'WalletSubscriptionUnsupportedError';

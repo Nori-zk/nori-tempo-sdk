@@ -2,8 +2,9 @@ import { define, type StateUnion } from '@yaw-rx/ystate';
 import { readThroughConnectionsOf } from '../rpc/connection/readThroughConnections.js';
 import type { ProofRequestHistoryEntry } from './fetchProofRequestHistory.js';
 
-/** The value read through the connections and kept current: the view and the block of its oldest request. */
+/** The value read through the connections and kept current: the submitting address, the view and the block of its oldest request. */
 const viewReadThroughConnections = readThroughConnectionsOf({
+    target: '',
     view: [] as ProofRequestHistoryEntry[],
     oldestBlock: 0,
 });
@@ -11,7 +12,8 @@ const viewReadThroughConnections = readThroughConnectionsOf({
 /**
  * A live view of a submitting address's newest N proof requests, newest
  * first: the view read through the connections and kept current
- * (`readThroughConnectionsOf`), with one edge of its own.
+ * (`readThroughConnectionsOf`), with one edge of its own. `target`, the
+ * submitting address, is its starting data.
  *
  * - `loading` reads the newest N from `fromBlock`; a refresh is due every
  *   interval, or on the recheck signal (e.g. bridge state changes from the

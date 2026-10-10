@@ -1,88 +1,104 @@
-import { isError, type JsonRpcSigner } from 'ethers';
-import { catchError, defer, distinctUntilChanged, filter, map, NEVER, type Observable, of, Subject, switchMap, take } from 'rxjs';
+import { type ResolveNodeData } from '@yaw-rx/ystate';
+import { defer, filter, map, type Observable, Subject, switchMap } from 'rxjs';
 import { type ConnectionName, type ProofRequestConnections } from '../../proofRequest/connectedRead.js';
-import { sentTransactionReceiptRead } from '../../transaction/sentTransaction.impl.js';
+import { type TransactionToSend } from '../../transaction/sentTransaction.js';
+import {
+    sendTransaction$,
+    sentTransactionRead,
+    sentTransactionTransitions,
+    type TransactionCall,
+    transactionToSendOf,
+} from '../../transaction/sentTransaction.impl.js';
+import { type TransactionMachineOptions } from '../../transaction/signerTransaction.impl.js';
 import { type RequestOutcome, requestOutcomes } from '../../utils/machines.js';
-import { messageOf } from '../../utils/messageOf.js';
-import { type ReadRetryBackoff, startReadThroughConnectionsMachine } from './readThroughConnections.impl.js';
+import { transportUsable$ } from './connections.js';
+import { startReadThroughConnectionsMachine } from './readThroughConnections.impl.js';
 import { WalletTransactionGraph } from './walletTransaction.js';
 
-/** The transaction to send, given the wallet's signer: e.g. a contract call, which emits the sent transaction once. */
-export type WalletCall = (signer: JsonRpcSigner) => Observable<{ hash: string }>;
-
 /** How one request to the wallet ended: the edge out of `askingToSign` it takes, with that node's data. */
-type SendOutcome = RequestOutcome<typeof WalletTransactionGraph, 'signed' | 'userDeclined' | 'sendRefused'>;
+type SendOutcome = RequestOutcome<
+    typeof WalletTransactionGraph,
+    'sent' | 'userDeclined' | 'contractRefused' | 'walletRefused'
+>;
 
 /**
- * Starts sending one transaction through the user's wallet on `chain`: it
- * asks the wallet to sign `call` once the wallet is ready, then reads the
- * transaction's receipt until it is mined.
+ * Starts a transaction on `chain`, made for `call` and sent through the
+ * user's wallet on each send request, then followed until it ends. It starts
+ * `ready`; a send request while the wallet is not ready moves to
+ * `notReadyToSend`.
  *
  * @param connections The Ethereum and Tempo chains, with their running connectivity machines.
  * @param chain The chain whose wallet signs and sends it.
- * @param call The transaction, given the wallet's signer.
- * @param backoff How long a failed receipt read waits before reading again.
- * @returns The running machine; `current` carries the receipt once mined. Its controls:
- *   - `send()`: asks the wallet again, after a decline or a failure.
- *   - `retry()`: reads the receipt again now, without waiting, while failed.
+ * @param call The contract, the call's data and the value.
+ * @param options The contract's error ABI, the drop threshold and the read backoff.
+ * @returns The running machine. Its controls:
+ *   - `send()`: asks the wallet to send it, from `ready`, `declined`, `refused`, `sendFailed` or `dropped`.
+ *   - `dismiss()`: leaves `notReadyToSend` for `ready` without sending.
+ *   - `retry()`: reads it again now, without waiting, while failed.
  *   - `close()`: moves the machine to `closed`.
  */
 export function createWalletTransactionMachine(
     connections: ProofRequestConnections,
     chain: ConnectionName,
-    call: WalletCall,
-    backoff: ReadRetryBackoff = {}
+    call: TransactionCall,
+    options: TransactionMachineOptions = {}
 ) {
+    const transaction = transactionToSendOf(chain, call);
     const wallet = connections[chain].wallet;
     const send$ = new Subject<void>();
-    const walletReady$ = (wallet.connection?.state$ ?? NEVER).pipe(
-        map(({ node }) => node === 'ready'),
-        distinctUntilChanged()
-    );
+    const dismiss$ = new Subject<void>();
+    const walletUsable$ = transportUsable$(connections[chain], 'wallet');
+    const { droppedAfterBlocks, ...following } = sentTransactionRead(connections, chain, options.droppedAfterBlocks);
 
     const machine = startReadThroughConnectionsMachine(WalletTransactionGraph, {
         connections,
-        ...sentTransactionReceiptRead(connections, chain),
-        backoff,
-        start: { node: 'waitingForWallet', data: {} },
-        ownTransitions: (_read$, state$) => {
+        ...following,
+        backoff: options.backoff,
+        start: { node: 'ready', data: { transaction } },
+        ownTransitions: (read$, state$) => {
+            // One request to the wallet per entry into `askingToSign`.
             const taking = requestOutcomes(
                 state$,
                 'askingToSign',
-                (): Observable<SendOutcome> =>
-                    wallet.ready$().pipe(
-                        switchMap((provider) => defer(() => provider.getSigner())),
-                        switchMap((signer) => call(signer)),
-                        take(1),
-                        map(
-                            ({ hash }): SendOutcome => ({
-                                transition: 'signed',
-                                data: { transactionHash: hash, receipt: undefined, failedReads: 0 },
-                            })
-                        ),
-                        catchError((error: unknown) =>
-                            of<SendOutcome>(
-                                isError(error, 'ACTION_REJECTED')
-                                    ? { transition: 'declined', data: {} }
-                                    : { transition: 'sendFailed', data: { error: messageOf(error) } }
-                            )
-                        )
+                ({ transaction }: ResolveNodeData<typeof WalletTransactionGraph.nodes, 'askingToSign'>): Observable<SendOutcome> =>
+                    sendTransaction$(
+                        wallet.ready$().pipe(switchMap((provider) => defer(() => provider.getSigner()))),
+                        transaction,
+                        options.errors
+                    ).pipe(
+                        map((result): SendOutcome => {
+                            if (result.outcome === 'sent') return { transition: 'sent', data: result.sent };
+                            if (result.outcome === 'declined') return { transition: 'declined', data: { transaction } };
+                            if (result.outcome === 'refused')
+                                return { transition: 'refused', data: { transaction, errorName: result.errorName } };
+                            return { transition: 'sendFailed', data: { transaction, error: result.error } };
+                        })
                     )
             );
             const enter = <TData>(data: TData) => data;
             return {
-                walletReady: { $: () => walletReady$.pipe(filter(Boolean)), next: () => ({}) },
-                signed: { $: () => taking('signed'), next: enter },
+                ...sentTransactionTransitions({
+                    read$,
+                    send$,
+                    dismiss$,
+                    usable$: walletUsable$,
+                    waitingOn: [`${chain}.wallet`],
+                    droppedAfterBlocks,
+                }),
+                sent: { $: () => taking('sent'), next: enter },
                 declined: { $: () => taking('declined'), next: enter },
+                refused: { $: () => taking('refused'), next: enter },
                 sendFailed: { $: () => taking('sendFailed'), next: enter },
                 walletLost: {
-                    $: () => walletReady$.pipe(filter((ready) => !ready)),
-                    next: () => ({ error: 'The wallet disconnected before the transaction was sent.' }),
+                    $: () => walletUsable$.pipe(filter((usable) => !usable)),
+                    next: (_lost: unknown, _dest: unknown, { transaction }: { transaction: TransactionToSend }) => ({
+                        transaction,
+                        error: 'The wallet disconnected before the transaction was sent.',
+                    }),
                 },
-                send: { $: () => send$, next: () => ({}) },
             };
         },
     });
 
-    return Object.assign(machine, { send: () => send$.next() });
+    return Object.assign(machine, { send: () => send$.next(), dismiss: () => dismiss$.next() });
 }

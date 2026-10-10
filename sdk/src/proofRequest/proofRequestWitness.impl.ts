@@ -1,4 +1,4 @@
-import { defer, map, NEVER } from 'rxjs';
+import { map, NEVER } from 'rxjs';
 import { type ProofRequestConnections } from './connectedRead.js';
 import { type ProofAvailableProofRequestSnapshot, proofRequestWitnessesOf } from './getProofRequestStateSnapshot.js';
 import {
@@ -32,24 +32,27 @@ export const createProofRequestWitnessMachine = (
 ) =>
     startReadThroughConnectionsMachine(ProofRequestWitnessGraph, {
         connections,
-        read: (clients) =>
+        read: (clients, { proofAvailable: proven }) =>
             clients
                 .ethereum((provider) =>
-                    defer(() =>
-                        proofRequestBatch$(
-                            provider,
-                            proofQueueAddress,
-                            proofAvailable.inputQueueCursor,
-                            proofAvailable.outputQueueCursor,
-                            Number(proofAvailable.previousOutputBlockNumber),
-                            Number(proofAvailable.outputBlockNumber)
-                        )
+                    proofRequestBatch$(
+                        provider,
+                        proofQueueAddress,
+                        proven.inputQueueCursor,
+                        proven.outputQueueCursor,
+                        Number(proven.previousOutputBlockNumber),
+                        Number(proven.outputBlockNumber)
                     )
                 )
-                .pipe(map((leaves) => proofRequestWitnessesOf(leaves, proofAvailable))),
+                .pipe(map((leaves) => ({ proofAvailable: proven, ...proofRequestWitnessesOf(leaves, proven) }))),
         // A committed batch never changes.
         refreshOn: () => dueOn(NEVER),
         kind: 'logs',
         needs: ['ethereum'],
         backoff,
+        // The proven request it is made for is its starting data.
+        start: {
+            node: 'loading',
+            data: { proofAvailable, witness: undefined, verifiedWitness: undefined, failedReads: 0 },
+        },
     });

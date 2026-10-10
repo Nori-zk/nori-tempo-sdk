@@ -1,4 +1,12 @@
-import { getAddress, type JsonRpcSigner, Log, makeError, TransactionReceipt, zeroPadValue } from 'ethers';
+import {
+    getAddress,
+    type JsonRpcSigner,
+    Log,
+    makeError,
+    TransactionReceipt,
+    type TransactionRequest,
+    zeroPadValue,
+} from 'ethers';
 import {
     asapScheduler,
     BehaviorSubject,
@@ -110,6 +118,15 @@ export interface FakeProofRequest {
     requestId: bigint;
     blockNumber: number;
     target: string;
+    /** The transaction's receipt status: 1 for success (default), 0 for a revert. */
+    status?: number;
+}
+
+/** What a fake signer's `sendTransaction` resolves to: the parts of ethers' response the sdk reads. */
+export interface FakeSentTransaction {
+    hash: string;
+    from: string;
+    nonce: number;
 }
 
 /** The transaction hash the fake chain gives the transaction that enqueued `requestId`. */
@@ -148,7 +165,16 @@ export function createFakeEthereumProvider(
 ) {
     const queue = NoriProofRequestQueue__factory.createInterface();
     const proofRequested = queue.getEvent('ProofRequested');
-    const state = { latestBlock, finalizedBlock, failNextReads: 0 };
+    // `minedNonces`: each sender's mined nonce (0 when unset); `pending`: the
+    // transactions the node knows and has not mined, by hash, with their
+    // sender and nonce.
+    const state = {
+        latestBlock,
+        finalizedBlock,
+        failNextReads: 0,
+        minedNonces: new Map<string, number>(),
+        pending: new Map<string, { from: string; nonce: number }>(),
+    };
     const failIfDown = () => {
         if (state.failNextReads > 0) {
             state.failNextReads--;
@@ -191,6 +217,19 @@ export function createFakeEthereumProvider(
             };
         },
         getNetwork: async () => ({ chainId: EXPECTED_CHAIN_ID }),
+        async getTransactionCount(address: string) {
+            failIfDown();
+            return state.minedNonces.get(address) ?? 0;
+        },
+        async getTransaction(hash: string) {
+            failIfDown();
+            const pending = state.pending.get(hash);
+            if (pending) return { hash, ...pending };
+            const mined = requests.find(
+                (request) => transactionHashOf(request.requestId) === hash && request.blockNumber <= state.latestBlock
+            );
+            return mined ? { hash, from: mined.target, nonce: Number(mined.requestId) } : null;
+        },
         async getLogs(filter: {
             fromBlock: number;
             toBlock: number;
@@ -242,7 +281,7 @@ export function createFakeEthereumProvider(
                     gasPrice: 0n,
                     blobGasPrice: null,
                     type: 2,
-                    status: 1,
+                    status: request.status ?? 1,
                     root: null,
                 },
                 fakeProvider
@@ -437,14 +476,20 @@ export function createFakeTempoProvider(
 
 /**
  * A wallet transport whose machine's node the test sets (`state$`): a
- * stand-in for the user's wallet, which only signs. Its signer is `signer`.
+ * stand-in for the user's wallet, which only signs. Its signer is `signer`,
+ * which sends a transaction with `sendTransaction`.
  *
  * @param node The node its machine starts in (default: `ready`).
+ * @param sendTransaction What the wallet does with a transaction it is asked to send (default: refuses it).
  * @returns The transport, its states and its signer.
  */
-export function createFakeWallet(node = 'ready') {
+export function createFakeWallet(
+    node = 'ready',
+    sendTransaction: (transaction: TransactionRequest) => Promise<FakeSentTransaction> = () =>
+        Promise.reject(new Error('The fake wallet sends nothing.'))
+) {
     const state$ = new BehaviorSubject<GraphState>({ node, data: {} });
-    const signer = { address: TARGET_A } as unknown as JsonRpcSigner;
+    const signer = { address: TARGET_A, sendTransaction } as unknown as JsonRpcSigner;
     const wallet = {
         connection: { state$ },
         current: () => ({ getSigner: () => Promise.resolve(signer) }),

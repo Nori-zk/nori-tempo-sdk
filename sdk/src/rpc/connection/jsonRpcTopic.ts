@@ -74,6 +74,14 @@ export function jsonRpcRequest$(
     );
 }
 
+/** Thrown when a node or a wallet refuses a subscription: the transport does not serve it. */
+export class SubscriptionRefusedError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'SubscriptionRefusedError';
+    }
+}
+
 /** What a subscription brings: the node acknowledging it, each time it is made, then each notification. */
 export type SubscriptionEvent<TResult> = { kind: 'acknowledged' } | { kind: 'notification'; result: TResult };
 
@@ -131,7 +139,7 @@ export function jsonRpcSubscription$<TResult>(
                     if (message.id !== subscribe.id)
                         return { kind: 'notification', result: message.params?.result as TResult };
                     if ('error' in message)
-                        throw new Error(
+                        throw new SubscriptionRefusedError(
                             `${subscribeMethod} was refused: ${JSON.stringify(message.error)}`
                         );
                     return { kind: 'acknowledged' };

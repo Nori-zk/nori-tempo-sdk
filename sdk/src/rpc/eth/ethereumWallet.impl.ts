@@ -71,6 +71,8 @@ export interface EthereumWalletOptions extends HealthCheckTimings {
     expectedChainId: bigint;
     /** How long to wait for wallets to announce themselves, in ms (default: 500). */
     walletSearchMs?: number;
+    /** How long a request to switch chain may go unanswered before it counts as failed, in ms (default: 60000). */
+    switchTimeoutMs?: number;
     /**
      * Where wallets announce themselves (EIP-6963); the window by default.
      * Outside a browser, with none given, no wallet can announce itself.
@@ -182,6 +184,7 @@ export function ethereumWallet(
     const {
         expectedChainId,
         walletSearchMs = 500,
+        switchTimeoutMs = 60_000,
         walletEvents = browserWindow(),
         injectedProvider = (globalThis as { ethereum?: Eip1193EventProvider })
             .ethereum,
@@ -390,6 +393,18 @@ export function ethereumWallet(
         },
         switchDeclined: { $: () => takingSwitch('switchDeclined'), next: (data) => data },
         switchRequestFailed: { $: () => takingSwitch('switchRequestFailed'), next: (data) => data },
+        // A switch request left unanswered goes back to `wrongNetwork`, from where the app may ask again.
+        switchTimedOut: {
+            $: () => timer(switchTimeoutMs),
+            next: (_timedOut, _dest, source) => ({
+                wallet: source.wallet,
+                url: source.url,
+                found: source.found,
+                expected: source.expected,
+                failedChecks: source.failedChecks,
+                lastSwitchError: `The wallet did not answer the request to switch chain within ${switchTimeoutMs} ms.`,
+            }),
+        },
         walletDisconnected: {
             $: () =>
                 walletProvider$.pipe(

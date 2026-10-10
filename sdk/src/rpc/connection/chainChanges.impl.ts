@@ -1,16 +1,21 @@
 import {
+    catchError,
     defer,
     distinctUntilChanged,
+    EMPTY,
     exhaustMap,
     filter,
     map,
+    NEVER,
     type Observable,
     of,
     ReplaySubject,
+    scan,
     skipWhile,
     startWith,
     Subject,
     switchMap,
+    throwError,
     timer,
 } from 'rxjs';
 import { dataOnEntry$, heldAcrossMoves, stateOf$, stateOnEntry$, type StartedMachine } from '../../utils/machines.js';
@@ -19,9 +24,10 @@ import { MAX_BLOCK_RANGE_PER_QUERY } from '../evm/blockRanges.js';
 import { blockNumber$ } from '../evm/blockNumber.js';
 import { type EthereumLogsFilter } from '../eth/topics.js';
 import { ChainChangesGraph, type ChainChangesState } from './chainChanges.js';
-import { type SubscriptionEvent } from './jsonRpcTopic.js';
+import { type SubscriptionEvent, SubscriptionRefusedError } from './jsonRpcTopic.js';
 import {
     type Ethereum,
+    ethereumCallsUsable$,
     forCalls$,
     forLogs$,
     subscriptionsOf,
@@ -74,11 +80,22 @@ export function createChainChangesMachine(chain: Ethereum | Tempo, logsFilter?: 
 
     /**
      * The transport to subscribe on: the first usable one not in
-     * `unsupported`, as it changes; `undefined` while there is none.
+     * `unsupported`, as it changes; `undefined` while there is none. The
+     * transport a subscription was lost on (`lostOn`) is left out until it
+     * has been unusable once.
      */
-    const chosen$ = (unsupported: string[]) =>
+    const chosen$ = (unsupported: string[], lostOn?: string) =>
         subscribable$.pipe(
-            map((usable) => usable.find((transport) => !unsupported.includes(transport))),
+            scan(
+                ({ waiting }, usable) => ({
+                    waiting: waiting && lostOn !== undefined && usable.some((transport) => transport === lostOn),
+                    usable,
+                }),
+                { waiting: true, usable: [] as SubscriptionTransport[] }
+            ),
+            map(({ waiting, usable }) =>
+                usable.find((transport) => !unsupported.includes(transport) && !(waiting && transport === lostOn))
+            ),
             distinctUntilChanged()
         );
 
@@ -107,7 +124,17 @@ export function createChainChangesMachine(chain: Ethereum | Tempo, logsFilter?: 
 
     const machine = ChainChangesGraph.implement({
         pushes: {
-            $: () => dataOnEntry$(state$, 'subscribed').pipe(switchMap(({ transport }) => pushesOn[transport])),
+            $: () =>
+                dataOnEntry$(state$, 'subscribed').pipe(
+                    switchMap(({ transport }) =>
+                        pushesOn[transport].pipe(
+                            // Only a refusal is an error; a subscription ending any other way is lost.
+                            catchError((error: unknown) =>
+                                error instanceof SubscriptionRefusedError ? throwError(() => error) : EMPTY
+                            )
+                        )
+                    )
+                ),
             next: (push, _dest, source) =>
                 push.kind === 'acknowledged'
                     ? { ...source, acknowledged: true }
@@ -116,13 +143,20 @@ export function createChainChangesMachine(chain: Ethereum | Tempo, logsFilter?: 
                 changes: source.changes + 1,
                 unsupported: [...source.unsupported, source.transport],
                 lastBlock: undefined,
+                lostOn: undefined,
+            }),
+            complete: (_lost, _dest, source) => ({
+                changes: source.changes + 1,
+                unsupported: source.unsupported,
+                lastBlock: undefined,
+                lostOn: source.transport,
             }),
         },
         subscribable: {
             $: () =>
                 entered$.pipe(
                     switchMap((state) =>
-                        chosen$(state.data.unsupported).pipe(
+                        chosen$(state.data.unsupported, 'lostOn' in state.data ? state.data.lostOn : undefined).pipe(
                             filter(
                                 (transport): transport is SubscriptionTransport =>
                                     transport !== undefined &&
@@ -148,19 +182,27 @@ export function createChainChangesMachine(chain: Ethereum | Tempo, logsFilter?: 
                 changes: source.changes + 1,
                 unsupported: source.unsupported,
                 lastBlock: undefined,
+                lostOn: undefined,
             }),
         },
         polls: {
             $: () =>
                 dataOnEntry$(state$, 'polling').pipe(
                     switchMap(({ lastBlock }) =>
-                        // The first poll goes out at once: it is where the machine starts following from.
-                        (lastBlock === undefined
-                            ? timer(pollIntervalMs, pollIntervalMs).pipe(startWith(0))
-                            : timer(pollIntervalMs, pollIntervalMs)
-                        ).pipe(
-                            exhaustMap(() => poll$(lastBlock)),
-                            filter((poll): poll is Poll => poll !== undefined)
+                        // It polls only while the chain's connection can take a call, and waits in `polling` otherwise.
+                        ethereumCallsUsable$(chain).pipe(
+                            switchMap((usable) =>
+                                !usable
+                                    ? NEVER
+                                    : // The first poll goes out at once: it is where the machine starts following from.
+                                      (lastBlock === undefined
+                                          ? timer(pollIntervalMs, pollIntervalMs).pipe(startWith(0))
+                                          : timer(pollIntervalMs, pollIntervalMs)
+                                      ).pipe(
+                                          exhaustMap(() => poll$(lastBlock)),
+                                          filter((poll): poll is Poll => poll !== undefined)
+                                      )
+                            )
                         )
                     )
                 ),
@@ -177,6 +219,7 @@ export function createChainChangesMachine(chain: Ethereum | Tempo, logsFilter?: 
                 changes: source.changes,
                 unsupported: source.unsupported,
                 lastBlock: source.lastBlock,
+                lostOn: source.lostOn,
             }),
         },
         close: {

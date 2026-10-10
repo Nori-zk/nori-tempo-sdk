@@ -1,4 +1,4 @@
-import { defer, map, NEVER } from 'rxjs';
+import { map, NEVER } from 'rxjs';
 import { type ProofRequestConnections } from '../proofRequest/connectedRead.js';
 import {
     type ReadRetryBackoff,
@@ -42,26 +42,26 @@ export const createProofQueueBatchRequestsMachine = (
 ) =>
     startReadThroughConnectionsMachine(ProofQueueBatchRequestsGraph, {
         connections,
-        read: (clients) =>
+        read: (clients, { batch: held, target }) =>
             clients
                 .ethereum((provider) =>
-                    defer(() =>
-                        enqueuedProofRequests$(provider, proofQueueAddress, {
-                            fromBlock:
-                                batch.previousOutputBlockNumber < 0n
-                                    ? query.fromBlock
-                                    : Number(batch.previousOutputBlockNumber) + 1,
-                            toBlock: Number(batch.outputBlockNumber),
-                            fromRequestId: batch.inputQueueCursor,
-                            toRequestId: batch.outputQueueCursor,
-                            target: query.target,
-                            maxBlockRangePerQuery: query.maxBlockRangePerQuery,
-                        })
-                    )
+                    enqueuedProofRequests$(provider, proofQueueAddress, {
+                        fromBlock:
+                            held.previousOutputBlockNumber < 0n
+                                ? query.fromBlock
+                                : Number(held.previousOutputBlockNumber) + 1,
+                        toBlock: Number(held.outputBlockNumber),
+                        fromRequestId: held.inputQueueCursor,
+                        toRequestId: held.outputQueueCursor,
+                        target,
+                        maxBlockRangePerQuery: query.maxBlockRangePerQuery,
+                    })
                 )
-                .pipe(map((requests) => ({ requests }))),
+                .pipe(map((requests) => ({ batch: held, target, requests }))),
         refreshOn: () => dueOn(NEVER),
         kind: 'logs',
         needs: ['ethereum'],
         backoff,
+        // The batch it is made for, and the submitting address, are its starting data.
+        start: { node: 'loading', data: { batch, target: query.target, requests: [], failedReads: 0 } },
     });

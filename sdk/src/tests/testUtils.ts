@@ -1,11 +1,22 @@
-import { type RunningMachine } from '@yaw-rx/ystate';
-import { getAddress, Log, makeError, TransactionReceipt, zeroPadValue } from 'ethers';
+import { getAddress, type JsonRpcSigner, Log, makeError, TransactionReceipt, zeroPadValue } from 'ethers';
 import {
+    asapScheduler,
     BehaviorSubject,
+    defer,
     filter,
     firstValueFrom,
+    map,
     type Observable,
+    of,
+    skip,
     Subject,
+    subscribeOn,
+    takeUntil,
+    takeWhile,
+    throwError,
+    timeout,
+    timer,
+    toArray,
 } from 'rxjs';
 import { NoriProofRequestQueue__factory } from '@nori-zk/ethereum-tempo-bridge';
 import type { EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
@@ -13,7 +24,8 @@ import { NoriTempoTokenBridge__factory } from '@nori-zk/tempo-token-bridge';
 import { type ProofRequestConnections } from '../proofRequest/connectedRead.js';
 import type { EthereumHealth } from '../rpc/eth/ethereumHttp.js';
 import { httpConnection } from '../rpc/connection/httpConnection.impl.js';
-import { ethereumChain } from '../rpc/connection/connections.js';
+import { ethereumChain, type EthereumTransports } from '../rpc/connection/connections.js';
+import { type GraphState } from '../utils/machines.js';
 
 export const QUEUE_ADDRESS = getAddress('0x' + '11'.repeat(20));
 export const BRIDGE_ADDRESS = getAddress('0x' + '22'.repeat(20));
@@ -29,44 +41,68 @@ export const FAST_TIMINGS = {
     retryBackoff: { initialDelayMs: 20, maxDelayMs: 80 },
 };
 
-export const sleep = (ms: number) =>
-    new Promise((resolve) => setTimeout(resolve, ms));
+/** How often the test chains poll while no transport can subscribe. */
+export const FAST_POLL_INTERVAL_MS = 50;
 
 /**
- * Waits until a running machine reaches `node`, failing after `timeoutMs`.
+ * Waits until a running machine is in `node`, failing after `timeoutMs`.
  *
  * @param machine The running machine.
  * @param node The node to wait for.
  * @param timeoutMs How long to wait.
- * @returns The state at `node`.
+ * @returns The machine's state in `node`, typed by its graph.
  */
-export function reach(
-    machine: RunningMachine,
-    node: string,
+export function waitForNode<TState extends { node: string }, TNode extends TState['node']>(
+    machine: { state$: Observable<TState> },
+    node: TNode,
     timeoutMs = 30_000
-): Promise<{ node: string; data: unknown }> {
-    return Promise.race([
-        firstValueFrom(
-            machine.state$.pipe(filter((state) => state.node === node))
-        ),
-        sleep(timeoutMs).then(() => {
-            throw new Error(`Did not reach ${node} within ${timeoutMs}ms.`);
-        }),
-    ]);
+): Promise<Extract<TState, { node: TNode }>> {
+    return firstValueFrom(
+        machine.state$.pipe(
+            filter((state): state is Extract<TState, { node: TNode }> => state.node === node),
+            timeout({
+                first: timeoutMs,
+                with: () => throwError(() => new Error(`Was not in ${node} within ${timeoutMs}ms.`)),
+            })
+        )
+    );
 }
 
 /**
- * Records every node a running machine visits.
+ * The nodes a machine moves to from now on, until it reaches `until`
+ * (included). Call it before what makes the machine move.
  *
  * @param machine The running machine.
- * @returns The visited nodes, in order, as they happen.
+ * @param until The node to stop at, or a test on the state to stop at.
+ * @param timeoutMs How long the moves may take.
+ * @returns The nodes it moved to, in order, once it reaches `until`.
  */
-export function recordNodes(machine: {
-    state$: Observable<{ node: string }>;
-}): string[] {
-    const nodes: string[] = [];
-    machine.state$.subscribe(({ node }) => nodes.push(node));
-    return nodes;
+export function nodesUntil<TState extends { node: string }>(
+    machine: { state$: Observable<TState> },
+    until: TState['node'] | ((state: TState) => boolean),
+    timeoutMs = 30_000
+): Promise<string[]> {
+    const reached = typeof until === 'string' ? (state: TState) => state.node === until : until;
+    return firstValueFrom(
+        machine.state$.pipe(
+            skip(1),
+            takeWhile((state) => !reached(state), true),
+            map(({ node }) => node),
+            toArray(),
+            timeout(timeoutMs)
+        )
+    );
+}
+
+/**
+ * The states a machine is in over the next `ms`, starting with where it is now.
+ *
+ * @param machine The running machine.
+ * @param ms How long to watch it.
+ * @returns Its states, in order, once the time is up.
+ */
+export function statesDuring<TState>(machine: { state$: Observable<TState> }, ms: number): Promise<TState[]> {
+    return firstValueFrom(machine.state$.pipe(takeUntil(timer(ms)), toArray()));
 }
 
 /** A proof request as the fake queue emits it. */
@@ -95,22 +131,24 @@ export function createRandom(seed: number) {
 }
 
 /**
- * An Ethereum provider serving `ProofRequested` logs and receipts for
- * `requests`, as a node would: logs filtered by block range and indexed
- * `target`, requests above `latestBlock` not yet mined. Log queries spanning
- * more than `maxBlockRange` blocks are rejected, as providers do;
- * `failNextReads` makes the next reads fail as an unreachable node does.
+ * An Ethereum provider serving `ProofRequested` logs, receipts and the
+ * latest and finalized blocks for `requests`, as a node would: logs
+ * filtered by block range and indexed `target`, requests above
+ * `latestBlock` not yet mined. Log queries spanning more than
+ * `maxBlockRange` blocks are rejected, as providers do; `failNextReads`
+ * makes the next reads fail as an unreachable node does.
  */
 export function createFakeEthereumProvider(
     requests: FakeProofRequest[],
     {
         latestBlock,
+        finalizedBlock = latestBlock,
         maxBlockRange = 2000,
-    }: { latestBlock: number; maxBlockRange?: number }
+    }: { latestBlock: number; finalizedBlock?: number; maxBlockRange?: number }
 ) {
     const queue = NoriProofRequestQueue__factory.createInterface();
     const proofRequested = queue.getEvent('ProofRequested');
-    const state = { latestBlock, failNextReads: 0 };
+    const state = { latestBlock, finalizedBlock, failNextReads: 0 };
     const failIfDown = () => {
         if (state.failNextReads > 0) {
             state.failNextReads--;
@@ -141,6 +179,16 @@ export function createFakeEthereumProvider(
         getBlockNumber: async () => {
             failIfDown();
             return state.latestBlock;
+        },
+        async getBlock(tag: 'latest' | 'finalized') {
+            failIfDown();
+            const number = tag === 'finalized' ? state.finalizedBlock : state.latestBlock;
+            return {
+                number,
+                hash: '0x' + number.toString(16).padStart(64, '0'),
+                parentHash: '0x' + Math.max(0, number - 1).toString(16).padStart(64, '0'),
+                timestamp: number * 12,
+            };
         },
         getNetwork: async () => ({ chainId: EXPECTED_CHAIN_ID }),
         async getLogs(filter: {
@@ -236,13 +284,20 @@ export function createContiguousBatches(
  * A Tempo provider serving the bridge contract's `state()`,
  * `proofQueueBatches` and `findProofQueueBatch` calls at `BRIDGE_ADDRESS`,
  * encoded with the contract's own ABI, and reverting with its errors as the
- * contract does. `setBatches` replaces the batches (and the queue cursor,
- * the last batch's output); `failNextReads` makes the next reads fail as a
- * node that never answers does.
+ * contract does. Batch `i` was committed at Tempo block `500 + i`, with its
+ * `ProofQueueBatchCommitted` and `UpdateApplied` logs; the latest block is
+ * the one after the last batch. `setBatches`
+ * replaces the batches (and the queue cursor, the last batch's output);
+ * `outputBlockOf` gives each batch's Ethereum output block; `failNextReads`
+ * makes the next reads fail as a node that never answers does, and
+ * `failNextCalls` the next contract calls only.
  */
-export function createFakeTempoProvider(initialBatches: FakeProofQueueBatch[]) {
+export function createFakeTempoProvider(
+    initialBatches: FakeProofQueueBatch[],
+    { outputBlockOf = (index: number) => 1000 + index }: { outputBlockOf?: (index: number) => number } = {}
+) {
     const bridge = NoriTempoTokenBridge__factory.createInterface();
-    const state = { failNextReads: 0, calls: 0 };
+    const state = { failNextReads: 0, failNextCalls: 0, calls: 0 };
     let batches: FakeProofQueueBatch[] = initialBatches;
 
     const setBatches = (next: FakeProofQueueBatch[]) => {
@@ -250,7 +305,7 @@ export function createFakeTempoProvider(initialBatches: FakeProofQueueBatch[]) {
     };
     const entryOf = (index: number) => ({
         root: '0x' + (index % 256).toString(16).padStart(2, '0').repeat(32),
-        outputBlockNumber: BigInt(1000 + index),
+        outputBlockNumber: BigInt(outputBlockOf(index)),
         inputQueueCursor: batches[index].inputQueueCursor,
         outputQueueCursor: batches[index].outputQueueCursor,
         tempoBlockNumber: BigInt(500 + index),
@@ -271,10 +326,71 @@ export function createFakeTempoProvider(initialBatches: FakeProofQueueBatch[]) {
             revert: null,
         });
 
+    /** Batch `index`'s log of `event`, at the Tempo block that committed it. */
+    const batchLogOf = (index: number, event: 'ProofQueueBatchCommitted' | 'UpdateApplied') => {
+        const entry = entryOf(index);
+        const { data, topics } =
+            event === 'ProofQueueBatchCommitted'
+                ? bridge.encodeEventLog(event, [
+                      BigInt(index),
+                      entry.root,
+                      entry.inputQueueCursor,
+                      entry.outputQueueCursor,
+                      entry.outputBlockNumber,
+                  ])
+                : bridge.encodeEventLog(event, [0n, entry.outputQueueCursor, '0x' + '00'.repeat(32), BigInt(index + 1)]);
+        const blockNumber = Number(entry.tempoBlockNumber);
+        return new Log(
+            {
+                address: BRIDGE_ADDRESS,
+                data,
+                topics,
+                blockNumber,
+                blockHash: '0x' + blockNumber.toString(16).padStart(64, '0'),
+                transactionHash: '0x' + blockNumber.toString(16).padStart(64, 'f'),
+                transactionIndex: 0,
+                index: 0,
+                removed: false,
+            },
+            provider as unknown as EthereumProvider
+        );
+    };
+
     const provider = {
         getNetwork: async () => ({ chainId: EXPECTED_TEMPO_CHAIN_ID }),
+        getBlockNumber: async () => {
+            failIfDown();
+            return 500 + batches.length;
+        },
+        async getBlock() {
+            failIfDown();
+            const number = 500 + batches.length;
+            return {
+                number,
+                hash: '0x' + number.toString(16).padStart(64, '0'),
+                parentHash: '0x' + (number - 1).toString(16).padStart(64, '0'),
+                timestamp: number,
+            };
+        },
+        async getLogs(filter: { fromBlock: number; toBlock: number; topics?: (string | null)[] }): Promise<Log[]> {
+            failIfDown();
+            const event = (['ProofQueueBatchCommitted', 'UpdateApplied'] as const).find(
+                (name) => bridge.getEvent(name).topicHash === filter.topics?.[0]
+            );
+            if (event === undefined) return [];
+            return batches.flatMap((_, index) => {
+                const block = Number(entryOf(index).tempoBlockNumber);
+                return block >= Number(filter.fromBlock) && block <= Number(filter.toBlock)
+                    ? [batchLogOf(index, event)]
+                    : [];
+            });
+        },
         async call(transaction: { to: string; data: string }) {
             failIfDown();
+            if (state.failNextCalls > 0) {
+                state.failNextCalls--;
+                throw new Error('The node did not answer.');
+            }
             state.calls++;
             if (getAddress(transaction.to) !== BRIDGE_ADDRESS) return '0x';
             const call = bridge.parseTransaction({ data: transaction.data });
@@ -320,17 +436,41 @@ export function createFakeTempoProvider(initialBatches: FakeProofQueueBatch[]) {
 }
 
 /**
+ * A wallet transport whose machine's node the test sets (`state$`): a
+ * stand-in for the user's wallet, which only signs. Its signer is `signer`.
+ *
+ * @param node The node its machine starts in (default: `ready`).
+ * @returns The transport, its states and its signer.
+ */
+export function createFakeWallet(node = 'ready') {
+    const state$ = new BehaviorSubject<GraphState>({ node, data: {} });
+    const signer = { address: TARGET_A } as unknown as JsonRpcSigner;
+    const wallet = {
+        connection: { state$ },
+        current: () => ({ getSigner: () => Promise.resolve(signer) }),
+        currentWalletProvider: (): undefined => undefined,
+        chooseWallet: (): void => undefined,
+        switchToExpectedChain: (): void => undefined,
+        reportReadFailed: (): void => undefined,
+        close: (): void => undefined,
+    } as unknown as NonNullable<EthereumTransports['wallet']>;
+    return { wallet, state$, signer };
+}
+
+/**
  * Both connections, each a real connectivity machine over a controllable
  * world: whether each endpoint answers its health checks, and whether the
  * network is online. Reads go through `provider` and `tempoProvider`.
  *
  * @param provider The Ethereum provider reads go through.
  * @param tempoProvider The Tempo provider reads go through.
+ * @param wallet An Ethereum wallet transport (`createFakeWallet`); reads still go through `provider`.
  * @returns The connections, and the switches that drive them.
  */
 export function createTestConnections(
     provider: EthereumProvider,
-    tempoProvider: EthereumProvider
+    tempoProvider: EthereumProvider,
+    wallet?: EthereumTransports['wallet']
 ) {
     // `…GoesDownOnReadFailure`: the endpoint stops answering at the moment a
     // read reports failing to reach it, so the re-check finds it down.
@@ -349,16 +489,12 @@ export function createTestConnections(
     const ethereumConnection = httpConnection<EthereumHealth>({
         ...FAST_TIMINGS,
         urls: ['https://ethereum.test'],
-        checkHealth: async (url) => {
-            if (!world.ethereumAnswers)
-                throw new Error('The Ethereum node did not answer.');
-            return {
-                outcome: 'onExpectedNetwork',
-                url,
-                health: { blockNumber: 1 },
-                checkedAt: 0,
-            };
-        },
+        checkHealth: (url) =>
+            defer(() =>
+                world.ethereumAnswers
+                    ? of({ outcome: 'onExpectedNetwork' as const, url, health: { blockNumber: 1 }, checkedAt: 0 })
+                    : throwError(() => new Error('The Ethereum node did not answer.'))
+            ).pipe(subscribeOn(asapScheduler)),
         networkWentOffline$: network$.pipe(
             filter((status) => status === 'offline')
         ),
@@ -374,16 +510,12 @@ export function createTestConnections(
     const tempoConnection = httpConnection<EthereumHealth>({
         ...FAST_TIMINGS,
         urls: ['https://tempo.test'],
-        checkHealth: async (url) => {
-            if (!world.tempoAnswers)
-                throw new Error('The Tempo node did not answer.');
-            return {
-                outcome: 'onExpectedNetwork',
-                url,
-                health: { blockNumber: 1 },
-                checkedAt: 0,
-            };
-        },
+        checkHealth: (url) =>
+            defer(() =>
+                world.tempoAnswers
+                    ? of({ outcome: 'onExpectedNetwork' as const, url, health: { blockNumber: 1 }, checkedAt: 0 })
+                    : throwError(() => new Error('The Tempo node did not answer.'))
+            ).pipe(subscribeOn(asapScheduler)),
         networkWentOffline$: network$.pipe(
             filter((status) => status === 'offline')
         ),
@@ -395,19 +527,25 @@ export function createTestConnections(
     });
 
     const connections: ProofRequestConnections = {
-        ethereum: ethereumChain({
-            http: {
-                connection: ethereumConnection,
-                current: () => provider,
-                reportReadFailed: () => {
-                    ethereumReadFailures.count++;
-                    if (world.ethereumGoesDownOnReadFailure)
-                        world.ethereumAnswers = false;
-                    ethereumReadFailed$.next();
+        ethereum: ethereumChain(
+            {
+                http: {
+                    connection: ethereumConnection,
+                    current: () => provider,
+                    reportReadFailed: () => {
+                        ethereumReadFailures.count++;
+                        if (world.ethereumGoesDownOnReadFailure)
+                            world.ethereumAnswers = false;
+                        ethereumReadFailed$.next();
+                    },
+                    close: () => ethereumClose$.next(),
                 },
-                close: () => ethereumClose$.next(),
+                wallet,
             },
-        }),
+            // Reads go through http; the wallet only signs.
+            wallet && { calls: ['http'], logs: ['http'] },
+            FAST_POLL_INTERVAL_MS
+        ),
         tempo: ethereumChain(
             {
                 http: {
@@ -423,7 +561,7 @@ export function createTestConnections(
                 },
             },
             {},
-            15_000,
+            FAST_POLL_INTERVAL_MS,
             'tempo'
         ),
     };

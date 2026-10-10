@@ -1,6 +1,10 @@
+import { id } from 'ethers';
 import { NoriTempoTokenBridge__factory } from '@nori-zk/tempo-token-bridge';
-import { type EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
-import { type EthereumLogNotification } from '../eth/topics.js';
+import {
+    type EthereumLogNotification,
+    type EthereumTransactionReceiptNotification,
+    transactionReceiptFrom,
+} from '../eth/topics.js';
 
 /** The bridge contract's ABI, for its events' topics and decoding. */
 const bridgeInterface = NoriTempoTokenBridge__factory.createInterface();
@@ -10,6 +14,24 @@ export const UPDATE_APPLIED_TOPIC = bridgeInterface.getEvent('UpdateApplied').to
 
 /** The topic of `ProofQueueBatchCommitted`, which an `update` committing a non-empty batch emits. */
 export const PROOF_QUEUE_BATCH_COMMITTED_TOPIC = bridgeInterface.getEvent('ProofQueueBatchCommitted').topicHash;
+
+/** The topic of `MintApplied`, which `mint` emits; its first indexed argument is the recipient. */
+export const MINT_APPLIED_TOPIC = bridgeInterface.getEvent('MintApplied').topicHash;
+
+/** The topic of `ERC20MintApplied`, which `mintERC20` emits; indexed by the ERC-20, then the recipient. */
+export const ERC20_MINT_APPLIED_TOPIC = bridgeInterface.getEvent('ERC20MintApplied').topicHash;
+
+/** The topic of `MirrorRegistered`, which `registerMirror` emits; indexed by the ERC-20. */
+export const MIRROR_REGISTERED_TOPIC = bridgeInterface.getEvent('MirrorRegistered').topicHash;
+
+/** The topic of `PauseApplied`, which `applyPause` emits; indexed by the ERC-20. */
+export const PAUSE_APPLIED_TOPIC = bridgeInterface.getEvent('PauseApplied').topicHash;
+
+/** The topic of a TIP-20's `Transfer`, indexed by sender then recipient; a mint is a transfer from the zero address. */
+export const TRANSFER_TOPIC = id('Transfer(address,address,uint256)');
+
+/** The topic of the fee manager's `UserTokenSet`, emitted when an account chooses its fee token; indexed by the account, then the token. */
+export const USER_TOKEN_SET_TOPIC = id('UserTokenSet(address,address)');
 
 /** A proof queue batch committed on Tempo, from its `ProofQueueBatchCommitted` log. */
 export interface ProofQueueBatchCommittedNotification {
@@ -48,32 +70,6 @@ export function proofQueueBatchCommittedOf(log: EthereumLogNotification): ProofQ
 }
 
 /** A transaction's receipt once it is mined, which on Tempo is final. */
-export interface TempoTransactionReceiptNotification {
-    transactionHash: string;
-    blockNumber: bigint;
-    /** 1 for success, 0 for a revert. */
-    status: number | null;
-}
+export type TempoTransactionReceiptNotification = EthereumTransactionReceiptNotification;
 
-/**
- * A transaction's receipt, once it is mined: what a receipt subscription
- * reads on each new block.
- *
- * @param provider The Tempo provider.
- * @param transactionHash The transaction.
- * @returns The receipt once mined, otherwise nothing.
- */
-export async function transactionReceiptFrom(
-    provider: EthereumProvider,
-    transactionHash: string
-): Promise<TempoTransactionReceiptNotification[]> {
-    const receipt = await provider.getTransactionReceipt(transactionHash);
-    if (receipt === null) return [];
-    return [
-        {
-            transactionHash: receipt.hash,
-            blockNumber: BigInt(receipt.blockNumber),
-            status: receipt.status,
-        },
-    ];
-}
+export { transactionReceiptFrom };

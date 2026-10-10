@@ -1,24 +1,17 @@
-import { BehaviorSubject, Observable, Subject } from 'rxjs';
+import { BehaviorSubject, defer, filter, firstValueFrom, Observable, of, Subject, throwError, timeout } from 'rxjs';
+import { type ChainChangesState } from '../../rpc/connection/chainChanges.js';
+import { createChainChangesMachine } from '../../rpc/connection/chainChanges.impl.js';
 import { ConnectionNotReadyError } from '../../rpc/connection/connectionNotReady.js';
-import {
-    ethereumChain,
-    type EthereumTransports,
-    forCalls,
-    forLogs,
-    forSubscriptions,
-} from '../../rpc/connection/connections.js';
-import {
-    EthRpcTransportError,
-    NoEthereumHttpConfiguredError,
-    NoEthereumWebsocketConfiguredError,
-    NoWalletConfiguredError,
-} from '../../rpc/eth/errors.js';
-import { WalletSubscriptionUnsupportedError } from '../../rpc/eth/walletSubscriptions.js';
-import { sleep } from '../testUtils.js';
+import { ethereumChain, type EthereumTransports, forCalls$, forLogs$ } from '../../rpc/connection/connections.js';
+import { MAX_BLOCK_RANGE_PER_QUERY } from '../../rpc/evm/blockRanges.js';
+import { NoWalletConfiguredError } from '../../rpc/eth/errors.js';
+import { EvmRpcTransportError } from '../../rpc/evm/errors.js';
+import { QUEUE_ADDRESS, statesDuring, waitForNode } from '../testUtils.js';
+import { type GraphState } from '../../utils/machines.js';
 
 /** A transport whose machine's node the test sets, standing in for a real one. */
 function fakeTransport(name: string, node: string) {
-    const state$ = new BehaviorSubject<{ node: string; data: unknown }>({ node, data: {} });
+    const state$ = new BehaviorSubject<GraphState>({ node, data: {} });
     const reported = { count: 0 };
     return {
         name,
@@ -35,12 +28,18 @@ function fakeTransport(name: string, node: string) {
     };
 }
 
-/** A websocket transport whose socket subscribes through `subscribe$`. */
+/**
+ * A websocket transport whose socket subscribes through `subscribe$`;
+ * `acknowledge()` answers the last subscribe request as a node does, with
+ * the subscription's id.
+ */
 function fakeWebsocket(node: string, subscribe$: Subject<unknown>) {
     const fake = fakeTransport('websocket', node);
+    const requests = { lastId: 0 };
     const socket = {
-        multiplex: () =>
+        multiplex: (subscribeMessage: () => { id: number }) =>
             new Observable((subscriber) => {
+                requests.lastId = subscribeMessage().id;
                 const subscription = subscribe$.subscribe(subscriber);
                 return () => subscription.unsubscribe();
             }),
@@ -48,13 +47,17 @@ function fakeWebsocket(node: string, subscribe$: Subject<unknown>) {
             fake.reported.count++;
         },
     };
-    return { ...fake, transport: { ...fake.transport, socket } };
+    const acknowledge = () => subscribe$.next({ id: requests.lastId, result: '0x1' });
+    return { ...fake, transport: { ...fake.transport, socket }, acknowledge };
 }
 
 const chainOf = (transports: Record<string, unknown>, order: Parameters<typeof ethereumChain>[1]) =>
     ethereumChain(transports as unknown as EthereumTransports, order, 20);
 
-describe('forCalls and forLogs', () => {
+/** The fake transport's name, from its provider. */
+const nameOf = (provider: unknown) => (provider as { name: string }).name;
+
+describe('forCalls$ and forLogs$', () => {
     test('run on the first ready transport in the caller order', async () => {
         const http = fakeTransport('http', 'ready');
         const wallet = fakeTransport('wallet', 'ready');
@@ -62,9 +65,9 @@ describe('forCalls and forLogs', () => {
             { http: http.transport, wallet: wallet.transport },
             { calls: ['wallet', 'http'], logs: ['http', 'wallet'] }
         );
-        const used = async (provider: unknown) => (provider as unknown as { name: string }).name;
-        expect(await forCalls(ethereum, used)).toBe('wallet');
-        expect(await forLogs(ethereum, used)).toBe('http');
+        const used = (provider: unknown) => of(nameOf(provider));
+        expect(await firstValueFrom(forCalls$(ethereum, used))).toBe('wallet');
+        expect(await firstValueFrom(forLogs$(ethereum, used))).toBe('http');
     });
 
     test('skip a transport that is not ready', async () => {
@@ -74,9 +77,7 @@ describe('forCalls and forLogs', () => {
             { http: http.transport, wallet: wallet.transport },
             { calls: ['http', 'wallet'], logs: ['http'] }
         );
-        expect(await forCalls(ethereum, async (provider) => (provider as unknown as { name: string }).name)).toBe(
-            'wallet'
-        );
+        expect(await firstValueFrom(forCalls$(ethereum, (provider) => of(nameOf(provider))))).toBe('wallet');
     });
 
     test('a request that never reached the node tells that transport and runs again on the next', async () => {
@@ -87,12 +88,17 @@ describe('forCalls and forLogs', () => {
             { calls: ['http', 'wallet'], logs: ['http'] }
         );
         const runs: string[] = [];
-        const result = await forCalls(ethereum, async (provider) => {
-            const { name } = provider as unknown as { name: string };
-            runs.push(name);
-            if (name === 'http') throw new EthRpcTransportError('no response', undefined);
-            return name;
-        });
+        const result = await firstValueFrom(
+            forCalls$(ethereum, (provider) =>
+                defer(() => {
+                    const name = nameOf(provider);
+                    runs.push(name);
+                    return name === 'http'
+                        ? throwError(() => new EvmRpcTransportError('no response', undefined))
+                        : of(name);
+                })
+            )
+        );
         expect(result).toBe('wallet');
         expect(runs).toEqual(['http', 'wallet']);
         expect(http.reported.count).toBe(1);
@@ -108,10 +114,14 @@ describe('forCalls and forLogs', () => {
         );
         let runs = 0;
         await expect(
-            forCalls(ethereum, async () => {
-                runs++;
-                throw new Error('execution reverted');
-            })
+            firstValueFrom(
+                forCalls$(ethereum, () =>
+                    defer(() => {
+                        runs++;
+                        return throwError(() => new Error('execution reverted'));
+                    })
+                )
+            )
         ).rejects.toThrow('execution reverted');
         expect(runs).toBe(1);
         expect(http.reported.count).toBe(0);
@@ -120,7 +130,9 @@ describe('forCalls and forLogs', () => {
     test('with nothing ready, fail at once with every transport state', async () => {
         const http = fakeTransport('http', 'unreachable');
         const ethereum = chainOf({ http: http.transport }, { calls: ['http', 'wallet'] });
-        const failure = await forCalls(ethereum, async () => 'never').catch((error: unknown) => error);
+        const failure = await firstValueFrom(forCalls$(ethereum, () => of('never'))).catch(
+            (error: unknown) => error
+        );
         expect(failure).toBeInstanceOf(ConnectionNotReadyError);
         expect((failure as ConnectionNotReadyError).notReady).toEqual([
             { transport: 'ethereum.http', state: { node: 'unreachable', data: {} } },
@@ -135,69 +147,124 @@ describe('forCalls and forLogs', () => {
         );
     });
 
-    test('ready() of a transport that is not configured throws its own error', async () => {
+    test('the wallet ready$() errors with its own error when no wallet is configured', async () => {
         const ethereum = chainOf({}, {});
-        await expect(ethereum.wallet.ready()).rejects.toBeInstanceOf(NoWalletConfiguredError);
-        await expect(ethereum.http.ready()).rejects.toBeInstanceOf(NoEthereumHttpConfiguredError);
-        await expect(ethereum.websocket.ready()).rejects.toBeInstanceOf(
-            NoEthereumWebsocketConfiguredError
-        );
+        await expect(firstValueFrom(ethereum.wallet.ready$())).rejects.toBeInstanceOf(NoWalletConfiguredError);
     });
 });
 
-describe('forSubscriptions', () => {
-    test('pushed while the websocket is open, polled while it is not, pushed again when it reopens', async () => {
+describe('the chain changes machine', () => {
+    /** An http transport whose provider serves `head` as the latest block and `logs` for any range. */
+    const fakeHttp = (head: { number: number }, logs: { found: unknown[]; reads: number }) => {
+        const http = fakeTransport('http', 'ready');
+        const provider = {
+            getBlock: async () => ({ ...head }),
+            getLogs: async () => {
+                logs.reads++;
+                return logs.found;
+            },
+        };
+        return { ...http.transport, current: () => provider };
+    };
+
+    /** The machine's first state matching `matches`, failing after a second. */
+    const stateWhere = (
+        machine: ReturnType<typeof createChainChangesMachine>,
+        matches: (state: ChainChangesState) => boolean
+    ) => firstValueFrom(machine.state$.pipe(filter(matches), timeout(1_000)));
+
+    test('subscribes while the websocket is open, polls while it is not, subscribes again when it reopens', async () => {
         const pushed$ = new Subject<unknown>();
         const websocket = fakeWebsocket('open', pushed$);
-        const http = fakeTransport('http', 'ready');
+        const head = { number: 100 };
         const ethereum = chainOf(
-            { http: http.transport, websocket: websocket.transport },
+            { http: fakeHttp(head, { found: [], reads: 0 }), websocket: websocket.transport },
             { calls: ['http'], logs: ['http'], subscriptions: ['websocket'] }
         );
-        const seen: unknown[] = [];
-        let polls = 0;
-        const subscription = forSubscriptions(ethereum, 
-                (socket) => socket.ethSubscribe(['newHeads']),
-                async () => [`polled ${++polls}`]
-            )
-            .subscribe((value) => seen.push(value));
+        const changes = createChainChangesMachine(ethereum);
+        const push = () => pushed$.next({ params: { subscription: 1, result: {} } });
 
-        const notification = (result: string) => ({ params: { subscription: 1, result } });
-        pushed$.next(notification('pushed 1'));
+        await stateWhere(changes, (state) => state.node === 'subscribed' && !state.data.acknowledged);
+        websocket.acknowledge();
+        await stateWhere(changes, (state) => state.node === 'subscribed' && state.data.acknowledged);
+        push();
+        await stateWhere(changes, (state) => state.node === 'subscribed' && state.data.changes === 1);
+
+        // Losing the websocket is a change; the first poll only reads the latest block.
         websocket.state$.next({ node: 'reconnecting', data: {} });
-        await sleep(30);
-        websocket.state$.next({ node: 'open', data: {} });
-        pushed$.next(notification('pushed 2'));
-        subscription.unsubscribe();
+        await stateWhere(
+            changes,
+            (state) => state.node === 'polling' && state.data.changes === 2 && state.data.lastBlock === 100
+        );
+        head.number = 101;
+        await stateWhere(
+            changes,
+            (state) => state.node === 'polling' && state.data.changes === 3 && state.data.lastBlock === 101
+        );
 
-        expect(seen[0]).toBe('pushed 1');
-        expect(seen).toContain('polled 1');
-        expect(seen[seen.length - 1]).toBe('pushed 2');
-        expect(polls).toBeGreaterThanOrEqual(1);
+        // Subscribing again after polling is a change.
+        websocket.state$.next({ node: 'open', data: {} });
+        await stateWhere(changes, (state) => state.node === 'subscribed' && state.data.changes === 4);
+        push();
+        await stateWhere(changes, (state) => state.node === 'subscribed' && state.data.changes === 5);
+
+        changes.close();
+        await waitForNode(changes, 'closed', 1_000);
     });
 
-    test('a wallet that does not serve eth_subscribe is passed over', async () => {
-        const http = fakeTransport('http', 'ready');
+    test('a wallet that does not serve eth_subscribe is recorded, and the machine polls', async () => {
         const wallet = fakeTransport('wallet', 'ready');
         const walletTransport = {
             ...wallet.transport,
-            currentWalletProvider: () => ({ request: async (): Promise<undefined> => undefined }),
+            currentWalletProvider: () => ({
+                request: async () => {
+                    throw new Error('eth_subscribe is not supported.');
+                },
+            }),
         };
         const ethereum = chainOf(
-            { http: http.transport, wallet: walletTransport },
+            { http: fakeHttp({ number: 100 }, { found: [], reads: 0 }), wallet: walletTransport },
             { calls: ['http'], logs: ['http'], subscriptions: ['wallet'] }
         );
-        const seen: unknown[] = [];
-        const subscription = forSubscriptions(ethereum, 
-                () =>
-                    new Observable<string>((subscriber) =>
-                        subscriber.error(new WalletSubscriptionUnsupportedError('refused'))
-                    ),
-                async () => ['polled']
-            )
-            .subscribe((value) => seen.push(value));
-        await sleep(10);
-        subscription.unsubscribe();
-        expect(seen).toContain('polled');
+        const changes = createChainChangesMachine(ethereum);
+
+        await stateWhere(
+            changes,
+            (state) => state.node === 'polling' && state.data.unsupported.includes('wallet')
+        );
+        const nodes = (await statesDuring(changes, 200)).map(({ node }) => node);
+        expect(new Set(nodes)).toEqual(new Set(['polling']));
+
+        changes.close();
+    });
+
+    test('with a logs filter, a block holding a matching log is a change, and a gap counts once unread', async () => {
+        const head = { number: 100 };
+        const logs = { found: [] as unknown[], reads: 0 };
+        const ethereum = chainOf({ http: fakeHttp(head, logs) }, { calls: ['http'], logs: ['http'] });
+        const changes = createChainChangesMachine(ethereum, { address: QUEUE_ADDRESS });
+
+        await stateWhere(changes, (state) => state.node === 'polling' && state.data.lastBlock === 100);
+        head.number = 101;
+        await stateWhere(
+            changes,
+            (state) => state.node === 'polling' && state.data.lastBlock === 101 && state.data.changes === 0
+        );
+        logs.found = [{}];
+        head.number = 102;
+        await stateWhere(
+            changes,
+            (state) => state.node === 'polling' && state.data.lastBlock === 102 && state.data.changes === 1
+        );
+
+        const readsBeforeGap = logs.reads;
+        head.number = 102 + MAX_BLOCK_RANGE_PER_QUERY + 1;
+        await stateWhere(
+            changes,
+            (state) => state.node === 'polling' && state.data.lastBlock === head.number && state.data.changes === 2
+        );
+        expect(logs.reads).toBe(readsBeforeGap);
+
+        changes.close();
     });
 });

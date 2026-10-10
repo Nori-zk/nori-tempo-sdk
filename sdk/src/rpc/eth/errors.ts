@@ -1,9 +1,4 @@
-export class EthRpcTransportError extends Error {
-    constructor(message: string, readonly cause: unknown) {
-        super(message);
-        this.name = 'EthRpcTransportError';
-    }
-}
+import { type EvmRpcTransportError } from '../evm/errors.js';
 
 export class EthCallFailedError extends Error {
     constructor(message: string, readonly cause: unknown) {
@@ -27,15 +22,8 @@ export class ProofRequestTransactionNotMinedError extends Error {
     }
 }
 
-export class EthDataNotFoundError extends Error {
-    constructor(message: string) {
-        super(message);
-        this.name = 'EthDataNotFoundError';
-    }
-}
-
 export type ProofRequestFailureCause =
-    | EthRpcTransportError
+    | EvmRpcTransportError
     | EthCallFailedError
     | MalformedProofRequestError;
 
@@ -52,28 +40,10 @@ export class ProofRequestBatchFetchError extends Error {
     }
 }
 
-/** Thrown by `ethereum.wallet.ready()` when the app gave no `ethereum.wallet`. */
+/** The error of `ethereum.wallet.ready$()` when the app gave no `ethereum.wallet`. */
 export class NoWalletConfiguredError extends Error {
     constructor() {
         super('No wallet is configured: give ethereum.wallet to createConnections to use one.');
         this.name = 'NoWalletConfiguredError';
-    }
-}
-
-/** Thrown by `ethereum.http.ready()` when the app gave no `ethereum.http`. */
-export class NoEthereumHttpConfiguredError extends Error {
-    constructor() {
-        super('No Ethereum http is configured: give ethereum.http to createConnections to use one.');
-        this.name = 'NoEthereumHttpConfiguredError';
-    }
-}
-
-/** Thrown by `ethereum.websocket.ready()` when the app gave no `ethereum.websocket`. */
-export class NoEthereumWebsocketConfiguredError extends Error {
-    constructor() {
-        super(
-            'No Ethereum websocket is configured: give ethereum.websocket to createConnections to use one.'
-        );
-        this.name = 'NoEthereumWebsocketConfiguredError';
     }
 }

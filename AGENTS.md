@@ -155,3 +155,193 @@ cargo run -p nori-cli -- deploy --help
     3. Make the changes, bump the version (`package.json`, `sdk/package.json`, `package-lock.json`), and run its build, lint and unit tests.
     4. `git add` the changed paths and give the user the commit message. The user commits and pushes.
     5. Run `npm run publish -- --dry-run` (`nw-publish`) and report it. The user publishes.
+
+## Lessons
+
+jk89 was sad the agents ignored his abstraction and worked around it
+
+- ystate and yaw are not in the training data. Without them, agents reach
+  for what they know: promises, `async`/`await`, `firstValueFrom`, helper
+  functions, one-shot reads, loading flags and `catchError` fallbacks. Before
+  writing anything, read the ystate README, `rpc/connection/readThroughConnections.ts`
+  with its `.impl.ts`, and one machine built on it
+  (`proofQueue/bridgeState.ts` with its `.impl.ts`); then build the value as
+  a machine the same way.
+- The public API is the funnel: it exports machines, live streams, and the
+  shared shape an app builds its own read machine from
+  (`readThroughConnectionsOf`, `startReadThroughConnectionsMachine`, whose
+  read is given the clients). Never export a runner (`forCalls$`,
+  `forLogs$`), a one-shot read, a readiness gate or a transport's
+  provider: every public piece a machine is built from becomes a way
+  around the machine.
+- Every value read through the connections is a machine: a two-line graph
+  `define(readThroughConnectionsOf({ value }))` and a `createXMachine` that
+  passes `startReadThroughConnectionsMachine` only what is its own: the
+  read, the chains it needs and its refresh trigger (`bridgeState`,
+  `mirror`, `proofRequestWitness`). The factory holds everything every
+  machine repeats. A value read once (a witness) is still a machine whose
+  refresh never comes. Pure functions stay functions; a send stays an
+  action.
+- A `createXMachine` returns the running machine itself, with its controls
+  on it (`retry()`, `close()`, `loadMore()`): never a wrapper whose
+  `.machine` the caller has to reach into.
+- A read tries once. Retrying belongs to the machine (`failedWhile…`,
+  `retryDue`, `retry()`); a retry loop inside a read hides the failure, keeps
+  the machine in `loading` and tells the transport late.
+- A transaction is a machine too: its own states in front (waiting for the
+  wallet, asking to sign, declined, failed), spreading
+  `readThroughConnectionsOf` for the receipt after it. Never wait for a
+  receipt inside a promise (`sent.wait()`); the receipt machine owns it. A
+  contract call is one `…Call` both paths use, never a send per signer.
+- Tests read a machine as a stream that ends: `waitForNode`, `nodesUntil`,
+  `statesDuring`, or a `valueOnceRead$` helper typed by the graph. Never subscribe
+  into an array a test inspects later, never `sleep` and check, never a
+  promise helper with `try/finally` around a machine. "Nothing happens" is
+  asserted as the states it stays in (`statesDuring`).
+- An event the sdk subscribes to is confirmed against what the chain
+  actually emits (a real local node), and its topic is computed in
+  TypeScript from its signature (`id('Transfer(address,address,uint256)')`),
+  never added to a contract interface for the sdk's sake.
+- Removing a public read removes a capability. Build its machine first,
+  prove it with the tests, then take the read out of the public API, never
+  the other way round.
+- Machines are isolated by domain: each holds only its own domain's
+  states. One machine uses another by gating its own transitions on the
+  other's `state$`, as the ystate README shows: the heater's transitions
+  gate on `temperature$` (the physics example, "Coupled systems"), and
+  Payment's `pay` gates on `deps.auth.state$` (the auth example, README
+  "Quick look" and the studio's checkout workspace). A graph can also
+  spread another graph's nodes and edges into its own
+  (`...readThroughConnectionsOf(...)`). Never copy another machine's
+  states into your own data.
+- A machine describes one domain; everything else is the outside world,
+  which it reaches only through `$`. Fixed configuration is not input: an
+  address or an RPC URL known when the machine is made defines the
+  machine. What arrives or changes during its life (data, another
+  machine's state, the user, the chain) comes in through `$`, and the
+  graph shows three things for it: the input arriving through `$`, an
+  edge that fires only when the outside allows it (the gate), and the node
+  the machine waits in until it does. That node is usually the one the
+  gated edge leaves from: the heater waits in `idle` until
+  `belowLowerLimit` lets it through, and Payment waits in `checkout` until
+  `payRequest` brings the card. A node of its own is needed only when why
+  it waits is something the domain shows or handles: Payment's
+  `notLoggedIn`, which the user sees and `dismiss` leaves, or
+  `waitingForConnectionWhile…`, which names the chain it waits on. A gate
+  either waits or refuses: a filter in `$` waits silently (the heater's
+  thresholds), an error edge refuses explicitly (`pay` errors into
+  `notLoggedIn`); it refuses when the outside saying no is a state of the
+  domain. Without these, the dependency is handled in code around the
+  graph, and the graph no longer describes what the machine does.
+- A transition's `$` is the external environment: "an Observable factory
+  over the external environment", whose "emissions are outside the
+  machine's control" (`clean/yaw/ystate/packages/ystate/README.md`, "Core
+  concepts", the Σ row of "The formalism" and "Transitions";
+  `TransitionShape.$` in `clean/yaw/ystate/packages/ystate/src/transitions.ts`).
+  Everything outside the graph enters a machine only there: another
+  system (the chain, Nori's server, the browser), another machine
+  (`deps.auth.state$`), and the inputs of a call. So:
+  - External state belongs in the streams that feed `$`; the graph holds
+    only what the machine itself decides.
+  - A machine exists before its work arrives, and the work's inputs arrive
+    through an edge's `$`. Payment sits in `checkout` from the start; `pay`
+    fires when `payRequest` emits, and `payRequest` carries the card, so
+    nothing is created late to hold the card
+    (`clean/yaw/ystate/packages/example/src/payment.ts`, or the studio's
+    checkout workspace in
+    `clean/yaw/ystate/packages/studio/src/app-root/default-workspaces.ts`).
+    A machine created per call with its inputs baked into its factory is
+    the opposite of this.
+  - Gating on another machine is also `$`: `pay` reads `deps.auth.state$`
+    with `withLatestFrom`; when Auth is not `authenticated` its error edge
+    goes to `notLoggedIn`, and `dismiss` brings it back to `checkout`. No
+    helper and no spawned machine.
+- A machine is started by its owner, who closes it; ownership never
+  transfers (the README: `Basket.close().start('empty', { auth })`, and
+  stopping basket leaves auth running). A machine that needs data known
+  only at runtime is started by whoever has that data (the app, or a
+  `create…Machine`), never inside another machine's streams: no starting a
+  machine in a `$`, a `refreshOn` or a `defer`, and no helper that does it
+  for you. ystate has no `spawn()` on purpose. A reading machine's creator
+  starts the chain changes machine it gates on and passes it in `owns`.
+- The graph holds the machine's own domain state; the outside world is
+  observed in the shape it has, like `temperature$` in the heater example.
+  Holding the outside world outside the graph is the idiom, not a break of
+  it, when the state classifies an external system's behaviour. ystate's
+  README shows both kinds of external system: the heater classifies the
+  room by observing `temperature$` (the physics example), and Basket
+  classifies auth by gating `checkout` on `deps.auth.state$` being
+  `authenticated` (the auth example); neither holds the other's states in
+  its graph. Read them before judging any state:
+  - the heater and the room: `clean/yaw/ystate/packages/ystate/README.md`,
+    section "Coupled systems" ("A heater FSM", then "A Physics
+    simulation"); runnable in `clean/yaw/ystate/packages/example/src/heater.ts`.
+  - Basket and auth: the same README, section "Quick look" (the Basket
+    graph and its `checkout` transition), and "Machine sets with multiple
+    machines" (Auth started by its owner and passed into
+    `Basket.close().start('empty', { auth })`); runnable in
+    `clean/yaw/ystate/packages/example/src/basket.ts`, `auth.ts` and
+    `payment.ts`; the studio's checkout workspace in
+    `clean/yaw/ystate/packages/studio/src/app-root/default-workspaces.ts`
+    (search `checkout`).
+  So in this sdk:
+  - `sinceRead$` classifies the chain, as the heater classifies the room:
+    whether it moved on since a read began.
+  - the unprocessed machine's `scope.applied` classifies Nori's server, as
+    Basket classifies auth: which update its pipeline has applied.
+  - the wallet machine's `wallets` map classifies the browser: which
+    wallets have announced themselves (EIP-6963).
+  Keeping such an observation subscribed while the machine moves between
+  nodes (`heldAcrossMoves`) is part of observing it, not state. A `$`
+  reading the entered node's data (`dataOnEntry$`) reads the graph's own
+  state, which is in the graph. Before calling something "state outside the
+  graph", ask what it classifies: our domain belongs in the graph, an
+  external system's behaviour does not.
+- ystate's source is in `clean/yaw/ystate/packages/ystate/src`. Before
+  writing any type or helper about a graph, look there first: a transition's
+  name is `TransitionNames`, a transition `TransitionDef`, a node's data
+  `ResolveNodeData`, a state `StateUnion`, a running machine
+  `RunningMachine` / `RunningMachineSet`, a defined graph
+  `IncidenceGraphSetMixin`. Writing your own copy of one is the same mistake
+  as a hand-written union beside the graph.
+- A shape several graphs share is written once and spread:
+  `readThroughConnectionsOf(data)` (a value read and kept current),
+  `healthCheckedOf(carried)` (a connection checked by its health; http and
+  the wallet). Their transitions are written once too
+  (`readThroughConnectionsTransitions`, `healthCheckedTransitions`), and so
+  is a pattern the machines repeat: one request per entry into a node,
+  shared by its outcome edges, is `requestOnEntry$`; outcomes split by a
+  field are `withOutcome`.
+- `refreshOn` is followed from before each read: its first emission says it
+  is following, each later one that a refresh is due. A chain trigger is
+  `changesOf$` of an owned chain changes machine, following once its
+  starting block is known (first poll, or the node acknowledging
+  `eth_subscribe`); anything without a starting point goes through `dueOn`. Starting a trigger only once the value is held
+  misses what changes during the read.
+- A read from a chain is an observable named for what it gives
+  (`bridgeState$`, `proofQueueBatches$`), built on `evmRpcRead$` (the one
+  ethers call, its failure an `EvmRpcTransportError`); loops over block
+  ranges are `from(blockRanges(…)).pipe(concatMap(…))`. A read that awaits
+  another read is logic in promises.
+- Stop using promises: this is an rxjs library. Every function, lambda,
+  runner and API the sdk exposes takes and returns observables or machines.
+  A promise exists only inside the lowest step, where a dependency (ethers)
+  returns one, wrapped once with `defer`; nothing above it sees a promise.
+
+- The connection layer (`createConnections`, each transport's machine,
+  `readThroughConnections$`, the readiness streams) and the machines exist
+  so that nothing else handles connectivity. Use them; never work around
+  them. Before writing code, find how the abstraction already does it.
+- Machines are for abstraction. Every read through the connections is one
+  machine driven by a lambda (the read, the chains it needs, when to read
+  again); domain state lives in the value the lambda returns. Code is never
+  copied: the second time the same code appears, it is abstracted into one
+  place every user calls. That covers a machine's waiting, failed and retry
+  edges, and the setup every `createXMachine` repeats (its subjects,
+  `stateOf$`, `implement`, `start`, `retry()` and `close()`).
+- Nothing is read once. A value that can change is kept current on its
+  trigger (new heads, logs, a recheck signal). A one-shot read (`fetch…`,
+  `…From`, a promise) is only ever the step a machine runs; no stream
+  swallows a failure with `catchError(() => EMPTY)`: a failure is a state.
+- Finding a shortcut means searching the whole codebase for the same
+  pattern and fixing every instance.

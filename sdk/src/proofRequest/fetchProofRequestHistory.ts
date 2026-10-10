@@ -1,18 +1,18 @@
-import { classifyProofRequests } from './classifyProofRequests.js';
+import { defer, EMPTY, expand, last, map, type Observable, of, switchMap } from 'rxjs';
+import { proofRequestSnapshots$ } from './proofRequestSnapshots.js';
 import { type ConnectedReadClients } from './connectedRead.js';
 import {
     type ProofRequestStateSnapshot,
     type ProofRequestStateSnapshotRequest,
 } from './getProofRequestStateSnapshot.js';
-import { EthRpcTransportError } from '../rpc/eth/errors.js';
-import { type ProofRequest } from '../rpc/eth/fetchProofRequest.js';
+import { blockNumber$ } from '../rpc/evm/blockNumber.js';
+import { type ProofRequest } from '../rpc/eth/proofRequest.js';
 import {
-    fetchProofRequestsByTarget,
+    proofRequestsByTarget$,
     type ProofRequestHistoryCursor,
     type ProofRequestsByTargetQuery,
-} from '../rpc/eth/fetchProofRequestsByTarget.js';
-import { fetchBridgeState } from '../rpc/tempo/fetchBridgeState.js';
-import { withBackoff } from '../utils/withBackoff.js';
+} from '../rpc/eth/proofRequestsByTarget.js';
+import { bridgeState$ } from '../rpc/tempo/bridgeState.js';
 
 /** The addresses a history read needs: no single enqueuing transaction. */
 export type ProofRequestHistoryRequest = Omit<
@@ -50,44 +50,66 @@ export interface ProofRequestCounts {
 const COUNTING_PAGE_SIZE = 1000;
 
 /**
+ * The highest block a read searches: `toBlock`, or Ethereum's latest block
+ * when it is omitted.
+ *
+ * @param clients The runner per chain.
+ * @param toBlock The highest block, if given.
+ * @returns The block's number, once.
+ */
+const toBlockOf$ = (clients: ConnectedReadClients, toBlock: number | undefined): Observable<number> =>
+    toBlock !== undefined ? of(toBlock) : clients.ethereum((provider) => blockNumber$(provider, 'latest'));
+
+/**
  * Reads one page of a submitting address's proof requests from Ethereum and
  * classifies them against one read of the bridge state on Tempo.
  *
  * @param clients The runner per chain: Ethereum reads the page, Tempo classifies it.
  * @param request The queue and bridge addresses.
  * @param query The submitting address, block range, order, page size and cursor.
- * @returns The page's entries, its continuation cursor, and whether the range is exhausted.
- * @throws ConnectionNotReadyError When no transport of a chain could serve its part.
+ * @returns The page's entries, its continuation cursor, and whether the range is exhausted, once.
+ *   Errors with `ConnectionNotReadyError` when no transport of a chain could serve its part.
  */
-export async function fetchProofRequestHistoryPage(
+export function fetchProofRequestHistoryPage$(
     clients: ConnectedReadClients,
     request: ProofRequestHistoryRequest,
     query: ProofRequestsByTargetQuery
-): Promise<ProofRequestHistoryPage> {
-    const page = await clients.ethereum((provider) =>
-        fetchProofRequestsByTarget(provider, request.proofQueueAddress, query)
-    );
-    if (page.requests.length === 0) {
-        return { entries: [], cursor: page.cursor, done: page.done };
-    }
-    const snapshots = await clients.tempo((provider) =>
-        classifyProofRequests(
-            provider,
-            page.requests.map((proofRequest) => ({
-                requestId: proofRequest.requestId,
-                requestBlockNumber: BigInt(proofRequest.blockNumber),
-            })),
-            request.bridgeAddress
-        )
-    );
-    return {
-        entries: page.requests.map((proofRequest, i) => ({
-            ...proofRequest,
-            snapshot: snapshots[i],
-        })),
-        cursor: page.cursor,
-        done: page.done,
-    };
+): Observable<ProofRequestHistoryPage> {
+    return toBlockOf$(clients, query.toBlock)
+        .pipe(
+            switchMap((toBlock) =>
+                clients.ethereum((provider) =>
+                    proofRequestsByTarget$(provider, request.proofQueueAddress, { ...query, toBlock })
+                )
+            ),
+            switchMap((page) =>
+                page.requests.length === 0
+                    ? of({ entries: [], cursor: page.cursor, done: page.done })
+                    : clients
+                          .tempo((provider) =>
+                              defer(() =>
+                                  proofRequestSnapshots$(
+                                      provider,
+                                      page.requests.map((proofRequest) => ({
+                                          requestId: proofRequest.requestId,
+                                          requestBlockNumber: BigInt(proofRequest.blockNumber),
+                                      })),
+                                      request.bridgeAddress
+                                  )
+                              )
+                          )
+                          .pipe(
+                              map((snapshots) => ({
+                                  entries: page.requests.map((proofRequest, i) => ({
+                                      ...proofRequest,
+                                      snapshot: snapshots[i],
+                                  })),
+                                  cursor: page.cursor,
+                                  done: page.done,
+                              }))
+                          )
+            )
+        );
 }
 
 /**
@@ -98,54 +120,62 @@ export async function fetchProofRequestHistoryPage(
  * @param clients The runner per chain: Ethereum reads the requests, Tempo the bridge's queue cursor.
  * @param request The queue and bridge addresses.
  * @param query The submitting address and block range.
- * @returns The total, proven and unprocessed counts.
- * @throws ConnectionNotReadyError When no transport of a chain could serve its part.
+ * @returns The total, proven and unprocessed counts, once.
+ *   Errors with `ConnectionNotReadyError` when no transport of a chain could serve its part.
  */
-export async function fetchProofRequestCountsByTarget(
+export function fetchProofRequestCountsByTarget$(
     clients: ConnectedReadClients,
     request: ProofRequestHistoryRequest,
     query: Pick<
         ProofRequestsByTargetQuery,
         'target' | 'fromBlock' | 'toBlock' | 'maxBlockRangePerQuery'
     >
-): Promise<ProofRequestCounts> {
+): Observable<ProofRequestCounts> {
     // Fixed up front so every page reads the same range.
-    const toBlock =
-        query.toBlock ??
-        (await clients.ethereum((provider) =>
-            withBackoff(() => provider.getBlockNumber()).catch((error: unknown) => {
-                throw new EthRpcTransportError('Failed to read the latest block number.', error);
-            })
-        ));
+    const toBlock$ = toBlockOf$(clients, query.toBlock);
+    /** One page after `after`, its ids added to those read so far. */
+    const page$ = (toBlock: number, requestIds: bigint[], after: ProofRequestHistoryCursor | undefined) =>
+        clients
+            .ethereum((provider) =>
+                defer(() =>
+                    proofRequestsByTarget$(provider, request.proofQueueAddress, {
+                        ...query,
+                        toBlock,
+                        order: 'asc',
+                        pageSize: COUNTING_PAGE_SIZE,
+                        after,
+                    })
+                )
+            )
+            .pipe(
+                map((page) => ({
+                    page,
+                    requestIds: [...requestIds, ...page.requests.map((proofRequest) => proofRequest.requestId)],
+                }))
+            );
 
-    const requestIds: bigint[] = [];
-    let after: ProofRequestHistoryCursor | undefined;
-    for (;;) {
-        const page = await clients.ethereum((provider) =>
-            fetchProofRequestsByTarget(provider, request.proofQueueAddress, {
-                ...query,
-                toBlock,
-                order: 'asc',
-                pageSize: COUNTING_PAGE_SIZE,
-                after,
-            })
-        );
-        requestIds.push(
-            ...page.requests.map((proofRequest) => proofRequest.requestId)
-        );
-        after = page.cursor;
-        if (page.done) break;
-    }
-
-    const { queueCursor } = await clients.tempo((provider) =>
-        fetchBridgeState(provider, request.bridgeAddress)
+    return toBlock$.pipe(
+        switchMap((toBlock) =>
+            page$(toBlock, [], undefined).pipe(
+                expand(({ page, requestIds }) =>
+                    page.done ? EMPTY : page$(toBlock, requestIds, page.cursor)
+                ),
+                last()
+            )
+        ),
+        switchMap(({ requestIds }) =>
+            clients
+                .tempo((provider) => bridgeState$(provider, request.bridgeAddress))
+                .pipe(
+                    map(({ queueCursor }) => {
+                        const proofAvailable = requestIds.filter((requestId) => requestId < queueCursor).length;
+                        return {
+                            total: requestIds.length,
+                            proofAvailable,
+                            unprocessed: requestIds.length - proofAvailable,
+                        };
+                    })
+                )
+        )
     );
-    const proofAvailable = requestIds.filter(
-        (requestId) => requestId < queueCursor
-    ).length;
-    return {
-        total: requestIds.length,
-        proofAvailable,
-        unprocessed: requestIds.length - proofAvailable,
-    };
 }

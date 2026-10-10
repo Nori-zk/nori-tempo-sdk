@@ -4,7 +4,6 @@ import {
     distinctUntilChanged,
     EMPTY,
     filter,
-    from,
     fromEvent,
     map,
     NEVER,
@@ -16,18 +15,29 @@ import {
     Subscription,
     switchMap,
     take,
-    timeout,
     timer,
 } from 'rxjs';
+import { type ResolveNodeData } from '@yaw-rx/ystate';
 import { BrowserProvider, toQuantity } from 'ethers';
 import { messageOf } from '../../utils/messageOf.js';
-import { atNode, dataOnEntry$, stateOf$, type StartedMachine } from '../../utils/machines.js';
+import {
+    atNode,
+    type RequestOutcome,
+    requestOnEntry$,
+    requestOutcomes,
+    stateOf$,
+    type StartedMachine,
+    withOutcome,
+} from '../../utils/machines.js';
 import {
     type HealthCheckTimings,
     resolveHealthCheckTimings,
-    retryDelayMs,
 } from '../connection/healthCheckTimings.js';
-import { type HttpHealthCheck } from '../connection/httpConnection.impl.js';
+import {
+    healthCheckedTransitions,
+    type HttpHealthCheck,
+    settledHealthCheck$,
+} from '../connection/httpConnection.impl.js';
 import { type NetworkMachine } from '../connection/network.impl.js';
 import {
     type Eip1193EventProvider,
@@ -35,7 +45,7 @@ import {
     requestErrorCode,
     USER_REJECTED_REQUEST,
 } from './eip1193.js';
-import { type EthereumHealth } from './ethereumHttp.js';
+import { chainHealthCheck$, type EthereumHealth } from './ethereumHttp.js';
 import {
     EthereumWalletGraph,
     type EthereumWalletState,
@@ -76,28 +86,11 @@ export interface EthereumWalletOptions extends HealthCheckTimings {
 /** What one health check of the wallet found: its chain, then its latest block. */
 type WalletHealthCheck = HttpHealthCheck<EthereumHealth>;
 
-/** How a switch request ended, when it did not switch the chain. */
-type SwitchRequest =
-    { outcome: 'declined' } | { outcome: 'failed'; error: string };
-
 /**
- * Keeps only the health check results with one outcome, narrowed to it.
- *
- * @param check$ Health check results.
- * @param outcome The outcome to keep.
- * @returns The results with that outcome.
+ * How a switch request ended, when it did not switch the chain: the edge
+ * out of `askingToSwitchChain` it takes, with that node's data.
  */
-function withOutcome<TOutcome extends WalletHealthCheck['outcome']>(
-    check$: Observable<WalletHealthCheck>,
-    outcome: TOutcome
-) {
-    return check$.pipe(
-        filter(
-            (check): check is Extract<WalletHealthCheck, { outcome: TOutcome }> =>
-                check.outcome === outcome
-        )
-    );
-}
+type SwitchOutcome = RequestOutcome<typeof EthereumWalletGraph, 'userDeclinedSwitch' | 'switchRequestFailed'>;
 
 /**
  * Whether an announcement event carries a wallet as EIP-6963 describes it:
@@ -184,7 +177,7 @@ function walletAnnouncement$(
  */
 export function ethereumWallet(
     options: EthereumWalletOptions,
-    network: NetworkMachine['network']
+    network: NetworkMachine
 ) {
     const {
         expectedChainId,
@@ -257,108 +250,73 @@ export function ethereumWallet(
      * @param wallet The wallet, whose reverse-DNS id is the check's `url`.
      * @returns The check's result, once.
      */
-    const runHealthCheck$ = (
-        provider: Eip1193EventProvider,
-        wallet: WalletInfo
-    ): Observable<WalletHealthCheck> =>
-        defer(async (): Promise<WalletHealthCheck> => {
-            const url = wallet.rdns;
-            const chainId = BigInt(
-                (await provider.request({ method: 'eth_chainId' })) as string
-            );
-            if (chainId !== expectedChainId)
-                return {
-                    outcome: 'onOtherNetwork',
-                    url,
-                    found: chainId.toString(),
-                    expected: expectedChainId.toString(),
-                };
-            const blockNumber = Number(
-                BigInt(
-                    (await provider.request({ method: 'eth_blockNumber' })) as string
-                )
-            );
-            return {
-                outcome: 'onExpectedNetwork',
-                url,
-                health: { blockNumber },
-                checkedAt: Date.now(),
-            };
-        }).pipe(
-            timeout(timings.healthCheckTimeoutMs),
-            catchError((error: unknown) =>
-                of<WalletHealthCheck>({
-                    outcome: 'failed',
-                    url: wallet.rdns,
-                    error: messageOf(error),
-                })
-            )
+    const runHealthCheck$ = (provider: Eip1193EventProvider, wallet: WalletInfo): Observable<WalletHealthCheck> =>
+        settledHealthCheck$(
+            chainHealthCheck$(
+                (method) => defer(() => provider.request({ method })).pipe(map((result) => BigInt(result as string))),
+                expectedChainId,
+                wallet.rdns
+            ),
+            wallet.rdns,
+            timings.healthCheckTimeoutMs
         );
 
     // The check's three outcome edges share one check per entry into
-    // `checking`. A chain change restarts it through the `checking`
-    // self-loop: the replayed state is the previous `checking`, with the
-    // same wallet, so the check goes to the right wallet either way.
-    const check$ = state$.pipe(
-        filter(atNode('checking')),
-        take(1),
-        switchMap((state) =>
-            walletProvider$.pipe(
-                take(1),
-                switchMap((provider) =>
-                    runHealthCheck$(
-                        provider,
-                        (state.data as { wallet: WalletInfo }).wallet
-                    )
-                )
-            )
-        ),
-        share()
+    // `checking`; a chain change restarts it through the `checking` self-loop.
+    const check$ = requestOnEntry$(state$, 'checking', ({ wallet }) =>
+        walletProvider$.pipe(
+            take(1),
+            switchMap((provider) => runHealthCheck$(provider, wallet))
+        )
     );
     // Background checks while ready, one interval after each entry.
-    const backgroundCheck$ = dataOnEntry$<EthereumWalletState, 'ready'>(
-        state$,
-        'ready'
-    ).pipe(
-        switchMap(({ wallet }) =>
+    const backgroundCheck$ = requestOnEntry$(state$, 'ready', ({ wallet }) =>
             timer(timings.healthCheckIntervalMs).pipe(
                 switchMap(() => walletProvider$.pipe(take(1))),
                 switchMap((provider) => runHealthCheck$(provider, wallet))
             )
-        ),
-        share()
     );
 
     // One switch request per entry into `askingToSwitchChain`. Accepting
     // arrives as a chain change, so a request that succeeds emits nothing.
-    const switchRequest$ = dataOnEntry$<
-        EthereumWalletState,
-        'askingToSwitchChain'
-    >(state$, 'askingToSwitchChain').pipe(
-        switchMap(() => walletProvider$.pipe(take(1))),
-        switchMap((provider) =>
-            defer(() =>
-                from(
+    const takingSwitch = requestOutcomes(
+        state$,
+        'askingToSwitchChain',
+        (asking: ResolveNodeData<typeof EthereumWalletGraph.nodes, 'askingToSwitchChain'>): Observable<SwitchOutcome> =>
+        walletProvider$.pipe(
+            take(1),
+            switchMap((provider) =>
+                defer(() =>
                     provider.request({
                         method: 'wallet_switchEthereumChain',
                         params: [{ chainId: toQuantity(expectedChainId) }],
                     })
-                )
-            ).pipe(
-                switchMap(() => NEVER),
-                catchError((error: unknown) =>
-                    of<SwitchRequest>(
-                        requestErrorCode(error) === USER_REJECTED_REQUEST
-                            ? { outcome: 'declined' }
-                            : { outcome: 'failed', error: messageOf(error) }
+                ).pipe(
+                    switchMap(() => NEVER),
+                    catchError((error: unknown) =>
+                        of<SwitchOutcome>(
+                            requestErrorCode(error) === USER_REJECTED_REQUEST
+                                ? { transition: 'switchDeclined', data: asking }
+                                : { transition: 'switchRequestFailed', data: { ...asking, lastSwitchError: messageOf(error) } }
+                        )
                     )
                 )
             )
-        ),
-        share()
+        )
     );
 
     const machine = EthereumWalletGraph.implement({
+        ...healthCheckedTransitions<EthereumHealth, { wallet: WalletInfo }>({
+            check$,
+            backgroundCheck$,
+            readFailed$,
+            networkWentOffline$: network.state$.pipe(filter(atNode('offline'))),
+            networkCameOnline$: network.state$.pipe(filter(atNode('online'))),
+            close$,
+            state$,
+            timings,
+            carry: ({ wallet }) => ({ wallet }),
+        }),
         foundOneWallet: {
             $: () => search$.pipe(filter((found) => found.length === 1)),
             next: ([wallet]) => ({ wallet, failedChecks: 0 }),
@@ -386,15 +344,6 @@ export function ethereumWallet(
                 ),
             next: (wallet) => ({ wallet, failedChecks: 0 }),
         },
-        checkFoundExpectedNetwork: {
-            $: () => withOutcome(check$, 'onExpectedNetwork'),
-            next: ({ url, health, checkedAt }, _dest, source) => ({
-                wallet: source.wallet,
-                url,
-                health,
-                checkedAt,
-            }),
-        },
         checkFoundOtherNetwork: {
             $: () => withOutcome(check$, 'onOtherNetwork'),
             next: ({ url, found, expected }, _dest, source) => ({
@@ -406,24 +355,6 @@ export function ethereumWallet(
                 lastSwitchError: '',
             }),
         },
-        checkFailed: {
-            $: () => withOutcome(check$, 'failed'),
-            next: ({ url, error }, _dest, source) => ({
-                wallet: source.wallet,
-                url,
-                failedChecks: source.failedChecks + 1,
-                error,
-            }),
-        },
-        backgroundCheckPassed: {
-            $: () => withOutcome(backgroundCheck$, 'onExpectedNetwork'),
-            next: ({ url, health, checkedAt }, _dest, source) => ({
-                wallet: source.wallet,
-                url,
-                health,
-                checkedAt,
-            }),
-        },
         backgroundCheckFoundOtherNetwork: {
             $: () => withOutcome(backgroundCheck$, 'onOtherNetwork'),
             next: ({ url, found, expected }, _dest, source) => ({
@@ -433,37 +364,6 @@ export function ethereumWallet(
                 expected,
                 failedChecks: 0,
                 lastSwitchError: '',
-            }),
-        },
-        backgroundCheckFailed: {
-            $: () => withOutcome(backgroundCheck$, 'failed'),
-            next: ({ url, error }, _dest, source) => ({
-                wallet: source.wallet,
-                url,
-                failedChecks: 1,
-                error,
-            }),
-        },
-        readFailed: {
-            $: () => readFailed$,
-            next: (_failed, _dest, source) => ({
-                wallet: source.wallet,
-                failedChecks: 0,
-            }),
-        },
-        retryDue: {
-            $: () =>
-                dataOnEntry$<EthereumWalletState, 'unreachable'>(
-                    state$,
-                    'unreachable'
-                ).pipe(
-                    switchMap(({ failedChecks }) =>
-                        timer(retryDelayMs(failedChecks, timings))
-                    )
-                ),
-            next: (_due, _dest, source) => ({
-                wallet: source.wallet,
-                failedChecks: source.failedChecks,
             }),
         },
         walletChangedChain: {
@@ -488,40 +388,8 @@ export function ethereumWallet(
                 failedChecks: source.failedChecks,
             }),
         },
-        switchDeclined: {
-            $: () =>
-                switchRequest$.pipe(
-                    filter(({ outcome }) => outcome === 'declined')
-                ),
-            next: (_declined, _dest, source) => ({
-                wallet: source.wallet,
-                url: source.url,
-                found: source.found,
-                expected: source.expected,
-                failedChecks: source.failedChecks,
-            }),
-        },
-        switchRequestFailed: {
-            $: () =>
-                switchRequest$.pipe(
-                    filter(
-                        (
-                            request
-                        ): request is Extract<
-                            SwitchRequest,
-                            { outcome: 'failed' }
-                        > => request.outcome === 'failed'
-                    )
-                ),
-            next: ({ error }, _dest, source) => ({
-                wallet: source.wallet,
-                url: source.url,
-                found: source.found,
-                expected: source.expected,
-                failedChecks: source.failedChecks,
-                lastSwitchError: error,
-            }),
-        },
+        switchDeclined: { $: () => takingSwitch('switchDeclined'), next: (data) => data },
+        switchRequestFailed: { $: () => takingSwitch('switchRequestFailed'), next: (data) => data },
         walletDisconnected: {
             $: () =>
                 walletProvider$.pipe(
@@ -543,21 +411,6 @@ export function ethereumWallet(
                 wallet: source.wallet,
                 failedChecks: 0,
             }),
-        },
-        networkWentOffline: {
-            $: () => network.state$.pipe(filter(atNode('offline'))),
-            next: (_offline, _dest, source) => ({ wallet: source.wallet }),
-        },
-        networkCameOnline: {
-            $: () => network.state$.pipe(filter(atNode('online'))),
-            next: (_online, _dest, source) => ({
-                wallet: source.wallet,
-                failedChecks: 0,
-            }),
-        },
-        close: {
-            $: () => close$,
-            next: () => ({}),
         },
     });
 

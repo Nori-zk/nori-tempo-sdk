@@ -1,11 +1,11 @@
 import { ZeroHash } from 'ethers';
-import { type EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
-import { classifyProofRequests } from './classifyProofRequests.js';
+import { defer, map, type Observable, switchMap } from 'rxjs';
+import { proofRequestSnapshots$ } from './proofRequestSnapshots.js';
 import { type ConnectedReadClients } from './connectedRead.js';
-import { findRequestIdByTxHash } from '../rpc/eth/fetchProofRequest.js';
-import { fetchProofRequestBatch } from '../rpc/eth/fetchProofRequestBatch.js';
+import { proofRequestOfTransaction$ } from '../rpc/eth/proofRequest.js';
+import { type ProofRequestBatchEntry } from '../rpc/eth/proofRequestBatch.js';
 import { request_witness, type RequestWitness } from '@nori-zk/ethereum-tempo-proof-queue-utils-glam';
-import type { ProofRequestStateGraph } from './proofRequest.js';
+import { type ProofRequestState } from './types.js';
 
 export interface ProofRequestStateSnapshotRequest {
     /** The Ethereum `NoriProofRequestQueue` address. */
@@ -16,39 +16,73 @@ export interface ProofRequestStateSnapshotRequest {
     bridgeAddress: string;
 }
 
-/**
- * Where a proof request is, read once from the chains: the data of the
- * proof request machine's `unprocessed` or `proofAvailable` node, without
- * the machine's own count of failed reads.
- */
-export type ProofRequestStateSnapshot =
-    | Omit<(typeof ProofRequestStateGraph.nodes)['unprocessed'], 'failedReads'>
-    | (typeof ProofRequestStateGraph.nodes)['proofAvailable'];
+/** A proof request not looked up yet. */
+export interface UndeterminedProofRequestSnapshot {
+    state: typeof ProofRequestState.Undetermined;
+}
+
+/** A proof request the bridge has not proven yet. */
+export interface UnprocessedProofRequestSnapshot {
+    state: typeof ProofRequestState.Unprocessed;
+    requestId: bigint;
+    requestBlockNumber: bigint;
+    queueCursor: bigint;
+    proofQueueBatchCount: bigint;
+}
+
+/** A proof request a committed proof queue batch covers. */
+export interface ProofAvailableProofRequestSnapshot {
+    state: typeof ProofRequestState.ProofAvailable;
+    requestId: bigint;
+    requestBlockNumber: bigint;
+    queueCursor: bigint;
+    proofQueueBatchIndex: bigint;
+    /** The Tempo block whose `update` committed the batch. */
+    tempoBlockNumber: bigint;
+    /** The 0x-prefixed batch root. */
+    root: string;
+    inputQueueCursor: bigint;
+    outputQueueCursor: bigint;
+    outputBlockNumber: bigint;
+    /** -1 when there is no previous proof queue batch (the first-ever batch). */
+    previousOutputBlockNumber: bigint;
+    indexInBatch: bigint;
+}
+
+/** Where a proof request is, read from the chains. */
+export type ProofRequestStateSnapshot = UnprocessedProofRequestSnapshot | ProofAvailableProofRequestSnapshot;
 
 /**
  * Discovers where a proof request is, from Ethereum and Tempo alone.
  *
  * @param clients The runner per chain: Ethereum finds the request, Tempo classifies it.
  * @param request The addresses and the transaction that enqueued the request.
- * @returns The unprocessed or proof available state data.
- * @throws ProofRequestTransactionNotMinedError When the transaction is not mined yet.
- * @throws ConnectionNotReadyError When no transport of a chain could serve its part.
+ * @returns The unprocessed or proof available snapshot, once.
+ *   Errors with `ProofRequestTransactionNotMinedError` when the transaction is not mined yet,
+ *   and with `ConnectionNotReadyError` when no transport of a chain could serve its part.
  */
-export async function getProofRequestStateSnapshot(
+export function proofRequestStateSnapshot$(
     clients: ConnectedReadClients,
     request: ProofRequestStateSnapshotRequest
-): Promise<ProofRequestStateSnapshot> {
-    const { requestId, blockNumber } = await clients.ethereum((provider) =>
-        findRequestIdByTxHash(provider, request.proofQueueAddress, request.proofRequestTxHash)
-    );
-    const [snapshot] = await clients.tempo((provider) =>
-        classifyProofRequests(
-            provider,
-            [{ requestId, requestBlockNumber: BigInt(blockNumber) }],
-            request.bridgeAddress
+): Observable<ProofRequestStateSnapshot> {
+    return clients
+        .ethereum((provider) =>
+            proofRequestOfTransaction$(provider, request.proofQueueAddress, request.proofRequestTxHash)
         )
-    );
-    return snapshot;
+        .pipe(
+            switchMap(({ requestId, blockNumber }) =>
+                clients.tempo((provider) =>
+                    defer(() =>
+                        proofRequestSnapshots$(
+                            provider,
+                            [{ requestId, requestBlockNumber: BigInt(blockNumber) }],
+                            request.bridgeAddress
+                        )
+                    )
+                )
+            ),
+            map(([snapshot]) => snapshot)
+        );
 }
 
 export class ProofRequestWitnessRootMismatchError extends Error {
@@ -61,38 +95,6 @@ export class ProofRequestWitnessRootMismatchError extends Error {
         );
         this.name = 'ProofRequestWitnessRootMismatchError';
     }
-}
-
-/**
- * Fetches every request in the proof request's committed batch from
- * Ethereum and builds its witness with `@nori-zk/ethereum-tempo-proof-queue-utils-glam` (the SP1
- * guest's own hashing, compiled to WebAssembly), checked against the batch
- * root committed on Tempo.
- *
- * @param provider The Ethereum provider.
- * @param proofAvailable The proof available state data.
- * @param proofQueueAddress The Ethereum `NoriProofRequestQueue` address.
- * @returns The request's leaf, its bottom-up path and the batch root.
- * @throws ProofRequestWitnessRootMismatchError When the rebuilt root differs from the committed root.
- */
-export async function fetchProofRequestWitness(
-    provider: EthereumProvider,
-    proofAvailable: (typeof ProofRequestStateGraph.nodes)['proofAvailable'],
-    proofQueueAddress: string
-): Promise<RequestWitness> {
-    const leaves = await fetchProofRequestBatch(
-        provider,
-        proofQueueAddress,
-        proofAvailable.inputQueueCursor,
-        proofAvailable.outputQueueCursor,
-        Number(proofAvailable.previousOutputBlockNumber),
-        Number(proofAvailable.outputBlockNumber)
-    );
-    const witness = request_witness({ leaves, index: Number(proofAvailable.indexInBatch) });
-    if (witness.root !== proofAvailable.root.toLowerCase()) {
-        throw new ProofRequestWitnessRootMismatchError(witness.root, proofAvailable.root);
-    }
-    return witness;
 }
 
 /**
@@ -112,30 +114,27 @@ export interface VerifiedRequestWitness {
     };
 }
 
+/** A proven request's witness, as its leaf, path and root, and in the shape the Tempo contracts take. */
+export interface ProofRequestWitnesses {
+    witness: RequestWitness;
+    verifiedWitness: VerifiedRequestWitness;
+}
+
 /**
- * Fetches every request in the proof request's committed batch from
- * Ethereum and builds its witness in the shape the Tempo contracts take,
- * checked against the batch root committed on Tempo.
+ * Builds a proven request's witness from every request in its committed
+ * batch, with `@nori-zk/ethereum-tempo-proof-queue-utils-glam` (the SP1
+ * guest's own hashing, compiled to WebAssembly), checked against the batch
+ * root committed on Tempo.
  *
- * @param provider The Ethereum provider.
- * @param proofAvailable The proof available state data.
- * @param proofQueueAddress The Ethereum `NoriProofRequestQueue` address.
- * @returns The request's path, index and request.
+ * @param leaves Every request in the batch, as of its output block (`proofRequestBatch$`).
+ * @param proofAvailable The request's proof available snapshot.
+ * @returns The request's leaf, bottom-up path and root, and the same in the shape the Tempo contracts take.
  * @throws ProofRequestWitnessRootMismatchError When the rebuilt root differs from the committed root.
  */
-export async function fetchVerifiedRequestWitness(
-    provider: EthereumProvider,
-    proofAvailable: (typeof ProofRequestStateGraph.nodes)['proofAvailable'],
-    proofQueueAddress: string
-): Promise<VerifiedRequestWitness> {
-    const leaves = await fetchProofRequestBatch(
-        provider,
-        proofQueueAddress,
-        proofAvailable.inputQueueCursor,
-        proofAvailable.outputQueueCursor,
-        Number(proofAvailable.previousOutputBlockNumber),
-        Number(proofAvailable.outputBlockNumber)
-    );
+export function proofRequestWitnessesOf(
+    leaves: ProofRequestBatchEntry[],
+    proofAvailable: ProofAvailableProofRequestSnapshot
+): ProofRequestWitnesses {
     const index = Number(proofAvailable.indexInBatch);
     const witness = request_witness({ leaves, index });
     if (witness.root !== proofAvailable.root.toLowerCase()) {
@@ -143,13 +142,16 @@ export async function fetchVerifiedRequestWitness(
     }
     const { target, collectionKeysCount, collectionKeys, value } = leaves[index];
     return {
-        path: witness.path,
-        index: BigInt(witness.index),
-        value: {
-            target,
-            collectionKeysCount,
-            collectionKeys: [collectionKeys[0] ?? ZeroHash, collectionKeys[1] ?? ZeroHash],
-            value: BigInt(value),
+        witness,
+        verifiedWitness: {
+            path: witness.path,
+            index: BigInt(witness.index),
+            value: {
+                target,
+                collectionKeysCount,
+                collectionKeys: [collectionKeys[0] ?? ZeroHash, collectionKeys[1] ?? ZeroHash],
+                value: BigInt(value),
+            },
         },
     };
 }

@@ -22,7 +22,18 @@ import {
     ZeroHash,
     zeroPadValue,
 } from 'ethers';
-import { firstValueFrom, timeout } from 'rxjs';
+import {
+    combineLatest,
+    defer,
+    filter,
+    finalize,
+    firstValueFrom,
+    map,
+    type Observable,
+    switchMap,
+    take,
+    timeout,
+} from 'rxjs';
 import {
     MIN_LOCK_AMOUNT_WEI,
     NoriProofRequestQueue__factory,
@@ -47,23 +58,25 @@ import {
 } from '@nori-zk/tempo-token-bridge';
 import { request_batch_root, type RequestLeaf } from '@nori-zk/ethereum-tempo-proof-queue-utils-glam';
 import {
-    applyPause,
-    bothReady$,
+    applyPauseCall,
     createConnections,
-    getErc20MintedSoFar,
-    getFeeToken,
-    getLastPauseApplied,
-    getMintedSoFar,
-    getMirror,
-    getProofRequestStateSnapshot,
-    getTokenBalance,
-    getVerifiedRequestWitness,
-    mint,
-    mintERC20,
+    createTransactionReceiptMachine,
+    createFeeTokenMachine,
+    createLastPauseAppliedMachine,
+    createMintedSoFarMachine,
+    createMirrorMachine,
+    createProofRequestStateMachine,
+    createProofRequestWitnessMachine,
+    createTokenBalanceMachine,
+    mintCall,
+    mintERC20Call,
     ProofRequestState,
-    type ProofRequestStateSnapshot,
+    type TokenBridgeCall,
+    type ProofAvailableProofRequestSnapshot,
+    type ProofRequestStateNodeUnion,
 } from '../../index.js';
 import { startAnvil, type LocalNode } from '../localNodes.js';
+import { type GraphState } from '../../utils/machines.js';
 
 const DEFAULT_MAINNET_FORK_RPC_URL = 'https://ethereum-rpc.publicnode.com';
 /** Anvil's public test key 0, funded on both nodes. */
@@ -102,6 +115,27 @@ function present<T>(value: T | null | undefined, what: string): T {
     if (value === null || value === undefined) throw new Error(`No ${what}.`);
     return value;
 }
+
+/**
+ * The data a reading machine holds once it is `current` and `held` says it
+ * is the value wanted; the machine closes after.
+ *
+ * @param machine The running machine, from its `create…Machine`.
+ * @param held Whether the data is the value wanted (default: the first `current`).
+ * @returns That data, once.
+ */
+const valueOnceRead$ =<TState extends GraphState>(
+    machine: { state$: Observable<TState>; close(): void },
+    held: (data: Extract<TState, { node: 'current' }>['data']) => boolean = () => true
+) =>
+    machine.state$.pipe(
+        filter((state): state is Extract<TState, { node: 'current' }> => state.node === 'current'),
+        map(({ data }) => data),
+        filter(held),
+        take(1),
+        timeout(60_000),
+        finalize(() => machine.close())
+    );
 
 describe('Token bridge through the sdk on local Ethereum and Tempo nodes', () => {
     let ethereumNode: LocalNode;
@@ -176,18 +210,75 @@ describe('Token bridge through the sdk on local Ethereum and Tempo nodes', () =>
         batchOutputBlocks.push(block);
     }
 
-    /** Where the request a transaction enqueued is, read once through the sdk. */
-    function snapshotOf(proofRequestTxHash: string): Promise<ProofRequestStateSnapshot> {
-        return getProofRequestStateSnapshot(connections, { proofQueueAddress, proofRequestTxHash, bridgeAddress });
-    }
+    /** Where the request a transaction enqueued is, from its proof request machine. */
+    const snapshot$ = (proofRequestTxHash: string) =>
+        defer(() =>
+            valueOnceRead$(createProofRequestStateMachine(connections, { proofQueueAddress, proofRequestTxHash, bridgeAddress }))
+        ).pipe(map(({ snapshot }) => snapshot));
 
-    /** The proof available state data, failing the test when the request has none. */
-    async function proofAvailableOf(proofRequestTxHash: string) {
-        const snapshot = await snapshotOf(proofRequestTxHash);
-        if (snapshot.state !== ProofRequestState.ProofAvailable)
-            throw new Error(`${proofRequestTxHash} has no proof available.`);
-        return snapshot;
-    }
+    /** The proof available snapshot, once the request's proof request machine is in `proofAvailable`. */
+    const proofAvailable$ = (proofRequestTxHash: string) =>
+        defer(() => {
+            const machine = createProofRequestStateMachine(connections, {
+                proofQueueAddress,
+                proofRequestTxHash,
+                bridgeAddress,
+            });
+            return machine.state$.pipe(
+                filter(
+                    (state): state is Extract<ProofRequestStateNodeUnion, { node: 'proofAvailable' }> =>
+                        state.node === 'proofAvailable'
+                ),
+                map(({ data }) => data.snapshot),
+                take(1),
+                timeout(60_000),
+                finalize(() => machine.close())
+            );
+        });
+
+    /** The request's verified witness, from its witness machine. */
+    const verifiedWitness$ = (proofAvailable: ProofAvailableProofRequestSnapshot) =>
+        defer(() => valueOnceRead$(createProofRequestWitnessMachine(connections, proofQueueAddress, proofAvailable))).pipe(
+            map(({ verifiedWitness }) => present(verifiedWitness, 'verified witness'))
+        );
+
+    /** How much `recipient` minted so far, of nETH or of `ethToken`'s mirror, from its machine. */
+    const mintedSoFar$ = (recipient: string, ethToken?: string) =>
+        defer(() => valueOnceRead$(createMintedSoFarMachine(connections, bridgeAddress, recipient, ethToken))).pipe(
+            map(({ minted }) => minted)
+        );
+
+    /** An account's balance of a TIP-20, from its machine. */
+    const balance$ = (token: string, account: string) =>
+        defer(() => valueOnceRead$(createTokenBalanceMachine(connections, token, account))).pipe(map(({ balance }) => balance));
+
+    /** An ERC-20's mirror, from its machine. */
+    const mirror$ = (ethToken: string) =>
+        defer(() => valueOnceRead$(createMirrorMachine(connections, bridgeAddress, ethToken))).pipe(
+            map(({ mirror }) => present(mirror, 'mirror'))
+        );
+
+    /** The batch whose pause state an ERC-20's mirror last followed, from its machine. */
+    const lastPauseApplied$ = (ethToken: string) =>
+        defer(() => valueOnceRead$(createLastPauseAppliedMachine(connections, bridgeAddress, ethToken))).pipe(
+            map(({ lastPauseApplied }) => lastPauseApplied)
+        );
+
+    /** The fee token an account chose, from its machine. */
+    const feeToken$ = (account: string) =>
+        defer(() => valueOnceRead$(createFeeTokenMachine(connections, account))).pipe(map(({ feeToken }) => feeToken));
+
+    /** A token bridge call sent with the test's Tempo signer, then its receipt's status once mined, from its receipt machine. */
+    const mined$ = (call: TokenBridgeCall) =>
+        call(tempoSigner).pipe(
+            switchMap((sent) =>
+                valueOnceRead$(
+                    createTransactionReceiptMachine(connections, 'tempo', sent.hash),
+                    ({ receipt }) => receipt !== undefined
+                )
+            ),
+            map(({ receipt }) => receipt?.status)
+        );
 
     beforeAll(async () => {
         [ethereumNode, tempoNode] = await Promise.all([
@@ -248,7 +339,14 @@ describe('Token bridge through the sdk on local Ethereum and Tempo nodes', () =>
             ethereum: { expectedChainId: (await ethereumProvider.getNetwork()).chainId, http: { rpcUrl: ethereumNode.url } },
             tempo: { expectedChainId: (await tempoProvider.getNetwork()).chainId, http: { rpcUrl: tempoNode.url } },
         });
-        await firstValueFrom(bothReady$(connections).pipe(timeout(60_000)));
+        // Both chains connected, from their status machines
+        await firstValueFrom(
+            combineLatest([connections.ethereum.status.connection.state$, connections.tempo.status.connection.state$]).pipe(
+                filter(([ethereum, tempo]) => ethereum.node === 'connected' && tempo.node === 'connected'),
+                take(1),
+                timeout(60_000)
+            )
+        );
     });
 
     afterAll(() => {
@@ -258,7 +356,8 @@ describe('Token bridge through the sdk on local Ethereum and Tempo nodes', () =>
     });
 
     test('a request no batch covers yet is unprocessed', async () => {
-        expect((await snapshotOf(transactions.lockTokens)).state).toBe(ProofRequestState.Unprocessed);
+        const snapshot = await firstValueFrom(snapshot$(transactions.lockTokens));
+        expect(snapshot.state).toBe(ProofRequestState.Unprocessed);
     });
 
     test('mints nETH against the proven ETH deposit, read by the queue in the first batch', async () => {
@@ -269,65 +368,64 @@ describe('Token bridge through the sdk on local Ethereum and Tempo nodes', () =>
         ).blockNumber;
         await plantNextBatch(ethDepositBlock);
 
-        const proofAvailable = await proofAvailableOf(transactions.lockTokens);
+        const proofAvailable = await firstValueFrom(proofAvailable$(transactions.lockTokens));
         expect(proofAvailable.proofQueueBatchIndex).toBe(0n);
         expect(proofAvailable.previousOutputBlockNumber).toBe(-1n);
 
-        const witness = await getVerifiedRequestWitness(connections.ethereum, proofAvailable, proofQueueAddress);
+        const witness = await firstValueFrom(verifiedWitness$(proofAvailable));
         expect(witness.value.target).toBe(tokenBridgeAddress);
         expect(witness.value.collectionKeysCount).toBe(1);
         expect(witness.value.collectionKeys[1]).toBe(ZeroHash);
 
         const lockedBU = MIN_LOCK_AMOUNT_WEI / WEI_PER_BRIDGE_UNIT;
-        await mint(tempoSigner, bridgeAddress, witness, proofAvailable.proofQueueBatchIndex);
-        expect(await getMintedSoFar(connections.tempo, bridgeAddress, tempoSigner.address)).toBe(lockedBU);
-        expect(await getTokenBalance(connections.tempo, nETH, tempoSigner.address)).toBe(lockedBU);
+        const mint = mintCall(bridgeAddress, witness, proofAvailable.proofQueueBatchIndex);
+        expect(await firstValueFrom(mined$(mint))).toBe(1);
+        expect(await firstValueFrom(mintedSoFar$(tempoSigner.address))).toBe(lockedBU);
+        expect(await firstValueFrom(balance$(nETH, tempoSigner.address))).toBe(lockedBU);
 
         // A claim reused has nothing left to mint: the bridge refuses it
-        const reused = await mint(tempoSigner, bridgeAddress, witness, proofAvailable.proofQueueBatchIndex).then(
-            (): unknown => undefined,
-            (error: unknown) => error
-        );
+        const reused = await firstValueFrom(mint(tempoSigner)).catch((error: unknown) => error);
         expect(isError(reused, 'CALL_EXCEPTION') && bridgeErrorName(reused.data)).toBe('ZeroMintAmount');
-        expect(await getTokenBalance(connections.tempo, nETH, tempoSigner.address)).toBe(lockedBU);
+        expect(await firstValueFrom(balance$(nETH, tempoSigner.address))).toBe(lockedBU);
     });
 
     test("mints USDC's mirror against the proven USDC deposit, read from logs in the next batch", async () => {
         // Batch 1, proven at the latest block, holds the USDC deposit and the pause sync
         await plantNextBatch(await ethereumProvider.getBlockNumber());
-        const proofAvailable = await proofAvailableOf(transactions.lockERC20);
+
+        const proofAvailable = await firstValueFrom(proofAvailable$(transactions.lockERC20));
         expect(proofAvailable.proofQueueBatchIndex).toBe(1n);
         expect(proofAvailable.previousOutputBlockNumber).toBe(BigInt(batchOutputBlocks[0]));
 
-        const witness = await getVerifiedRequestWitness(connections.ethereum, proofAvailable, proofQueueAddress);
+        const witness = await firstValueFrom(verifiedWitness$(proofAvailable));
         expect(witness.value.collectionKeys[1]).toBe(zeroPadValue(USDC, 32).toLowerCase());
 
-        const mirror = present(await getMirror(connections.tempo, bridgeAddress, USDC), 'USDC mirror');
+        const mirror = await firstValueFrom(mirror$(USDC));
         expect(mirror).toBe(await NoriTempoTokenBridge__factory.connect(bridgeAddress, tempoProvider).mirrorOf(USDC));
-        await mintERC20(tempoSigner, bridgeAddress, witness, proofAvailable.proofQueueBatchIndex);
-        expect(await getErc20MintedSoFar(connections.tempo, bridgeAddress, USDC, tempoSigner.address)).toBe(USDC_LOCKED);
-        expect(await getTokenBalance(connections.tempo, mirror, tempoSigner.address)).toBe(USDC_LOCKED);
+        expect(await firstValueFrom(mined$(mintERC20Call(bridgeAddress, witness, proofAvailable.proofQueueBatchIndex)))).toBe(1);
+        expect(await firstValueFrom(mintedSoFar$(tempoSigner.address, USDC))).toBe(USDC_LOCKED);
+        expect(await firstValueFrom(balance$(mirror, tempoSigner.address))).toBe(USDC_LOCKED);
     });
 
     test("pauses USDC's mirror with the proven pause state", async () => {
-        const proofAvailable = await proofAvailableOf(transactions.syncPause);
-        const witness = await getVerifiedRequestWitness(connections.ethereum, proofAvailable, proofQueueAddress);
+        const proofAvailable = await firstValueFrom(proofAvailable$(transactions.syncPause));
+        const witness = await firstValueFrom(verifiedWitness$(proofAvailable));
         expect(witness.value.collectionKeys[0]).toBe(PAUSE_KEY);
         expect(witness.value.value).toBe(PAUSE_STATE_PAUSED);
 
-        expect(await getLastPauseApplied(connections.tempo, bridgeAddress, USDC)).toEqual({ applied: false });
-        await applyPause(tempoSigner, bridgeAddress, witness, proofAvailable.proofQueueBatchIndex);
-        const mirror = present(await getMirror(connections.tempo, bridgeAddress, USDC), 'USDC mirror');
+        expect(await firstValueFrom(lastPauseApplied$(USDC))).toEqual({ applied: false });
+        expect(await firstValueFrom(mined$(applyPauseCall(bridgeAddress, witness, proofAvailable.proofQueueBatchIndex)))).toBe(1);
+        const mirror = await firstValueFrom(mirror$(USDC));
         expect(await ITIP20__factory.connect(mirror, tempoProvider).paused()).toBe(true);
-        expect(await getLastPauseApplied(connections.tempo, bridgeAddress, USDC)).toEqual({
+        expect(await firstValueFrom(lastPauseApplied$(USDC))).toEqual({
             applied: true,
             proofQueueBatchIndex: proofAvailable.proofQueueBatchIndex,
         });
     });
 
-    test("reads the fee token an account chose, and none for an account that chose none", async () => {
-        const feeToken = present(await getFeeToken(connections.tempo, tempoSigner.address), 'fee token');
-        expect(await getTokenBalance(connections.tempo, feeToken, tempoSigner.address)).toBeGreaterThan(0n);
-        expect(await getFeeToken(connections.tempo, Wallet.createRandom().address)).toBeUndefined();
+    test('reads the fee token an account chose, and none for an account that chose none', async () => {
+        const feeToken = present(await firstValueFrom(feeToken$(tempoSigner.address)), 'fee token');
+        expect(await firstValueFrom(balance$(feeToken, tempoSigner.address))).toBeGreaterThan(0n);
+        expect(await firstValueFrom(feeToken$(Wallet.createRandom().address))).toBeUndefined();
     });
 });

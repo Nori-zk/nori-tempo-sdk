@@ -1,6 +1,6 @@
 import { type Block, type Log, toQuantity } from 'ethers';
 import { type EthereumProvider } from '@nori-zk/ethereum-tempo-bridge/iso-provider';
-import { type Observable } from 'rxjs';
+import { defer, map, type Observable, of, switchMap } from 'rxjs';
 import { type EthereumSubscriptionSocket } from '../connection/connections.js';
 
 /** A new block's header, as `eth_subscribe` `newHeads` pushes it (hex quantities). */
@@ -56,16 +56,50 @@ export function logsFrom(
     return socket.ethSubscribe<EthereumLogNotification>(['logs', filter]);
 }
 
+/** A transaction's receipt once it is mined. */
+export interface EthereumTransactionReceiptNotification {
+    transactionHash: string;
+    blockNumber: bigint;
+    /** 1 for success, 0 for a revert. */
+    status: number | null;
+}
+
+/**
+ * A transaction's receipt, once it is mined: what a receipt subscription
+ * reads on each new block.
+ *
+ * @param provider The provider.
+ * @param transactionHash The transaction.
+ * @returns The receipt once mined, otherwise nothing, once.
+ */
+export function transactionReceiptFrom(
+    provider: EthereumProvider,
+    transactionHash: string
+): Observable<EthereumTransactionReceiptNotification[]> {
+    return defer(() => provider.getTransactionReceipt(transactionHash)).pipe(
+        map((receipt) =>
+            receipt === null
+                ? []
+                : [
+                      {
+                          transactionHash: receipt.hash,
+                          blockNumber: BigInt(receipt.blockNumber),
+                          status: receipt.status,
+                      },
+                  ]
+        )
+    );
+}
+
 /**
  * The latest block's header, as `newHeads` would have pushed it: what a
  * new heads subscription polls while it cannot subscribe.
  *
  * @param provider The Ethereum provider.
- * @returns The latest head, or nothing when there is no block.
+ * @returns The latest head, or nothing when there is no block, once.
  */
-export async function latestHeadFrom(provider: EthereumProvider): Promise<EthereumNewHeadNotification[]> {
-    const block = await provider.getBlock('latest');
-    return block === null ? [] : [headOf(block)];
+export function latestHeadFrom(provider: EthereumProvider): Observable<EthereumNewHeadNotification[]> {
+    return defer(() => provider.getBlock('latest')).pipe(map((block) => (block === null ? [] : [headOf(block)])));
 }
 
 /** Where a polled logs subscription has got to: the last block it read. */
@@ -81,21 +115,28 @@ export interface LogsCursor {
  * @param provider The Ethereum provider.
  * @param filter The emitting contracts and topics.
  * @param cursor The last block read, moved on by each poll.
- * @returns The new logs, oldest first.
+ * @returns The new logs, oldest first, once.
  */
-export async function logsSinceFrom(
+export function logsSinceFrom(
     provider: EthereumProvider,
     filter: EthereumLogsFilter,
     cursor: LogsCursor
-): Promise<EthereumLogNotification[]> {
-    const latest = await provider.getBlockNumber();
-    if (cursor.lastBlock === undefined || latest <= cursor.lastBlock) {
-        cursor.lastBlock ??= latest;
-        return [];
-    }
-    const logs = await provider.getLogs({ ...filter, fromBlock: cursor.lastBlock + 1, toBlock: latest });
-    cursor.lastBlock = latest;
-    return logs.map(logOf);
+): Observable<EthereumLogNotification[]> {
+    return defer(() => provider.getBlockNumber()).pipe(
+        switchMap((latest) => {
+            const lastBlock = cursor.lastBlock;
+            if (lastBlock === undefined || latest <= lastBlock) {
+                cursor.lastBlock ??= latest;
+                return of([]);
+            }
+            return defer(() => provider.getLogs({ ...filter, fromBlock: lastBlock + 1, toBlock: latest })).pipe(
+                map((logs) => {
+                    cursor.lastBlock = latest;
+                    return logs.map(logOf);
+                })
+            );
+        })
+    );
 }
 
 /**

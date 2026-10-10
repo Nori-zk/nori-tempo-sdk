@@ -85,7 +85,7 @@ export class ReconnectingWebSocketSubject<T> extends Subject<T> {
 
     constructor(
         config: ReconnectingWebSocketConfig<T>,
-        network: NetworkMachine['network']
+        network: NetworkMachine
     ) {
         super();
         this.config = config;
@@ -307,7 +307,7 @@ export class ReconnectingWebSocketSubject<T> extends Subject<T> {
  */
 export function websocketConnection<T>(
     config: ReconnectingWebSocketConfig<T>,
-    network: NetworkMachine['network']
+    network: NetworkMachine
 ) {
     const socket = new ReconnectingWebSocketSubject<T>(config, network);
     return {

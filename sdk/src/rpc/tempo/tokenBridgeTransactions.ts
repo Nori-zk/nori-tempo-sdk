@@ -1,89 +1,61 @@
-import { type ContractRunner, type ContractTransactionReceipt, type ContractTransactionResponse } from 'ethers';
+import { type ContractRunner, type ContractTransactionResponse } from 'ethers';
+import { defer, type Observable } from 'rxjs';
 import { NoriTempoTokenBridge__factory } from '@nori-zk/tempo-token-bridge';
 import { type VerifiedRequestWitness } from '../../proofRequest/getProofRequestStateSnapshot.js';
 
-/** A Tempo transaction that reverted after it was sent. */
-export class TempoTransactionRevertedError extends Error {
-    constructor(readonly transactionHash: string) {
-        super(`Tempo transaction ${transactionHash} reverted.`);
-        this.name = 'TempoTransactionRevertedError';
-    }
-}
-
 /**
- * Waits for a sent transaction's receipt, which on Tempo is final.
- *
- * @param sent The sent transaction.
- * @returns Its receipt.
- * @throws TempoTransactionRevertedError When it reverted.
+ * A token bridge transaction, given who signs it: emits the sent
+ * transaction once. `createTransactionReceiptMachine` follows its receipt;
+ * `createWalletTransactionMachine` sends it through the user's wallet and
+ * follows its receipt.
  */
-async function receiptOf(sent: ContractTransactionResponse): Promise<ContractTransactionReceipt> {
-    const receipt = await sent.wait();
-    if (receipt === null || receipt.status !== 1) throw new TempoTransactionRevertedError(sent.hash);
-    return receipt;
-}
+export type TokenBridgeCall = (signer: ContractRunner) => Observable<ContractTransactionResponse>;
 
 /**
- * Mints the bridged token (nETH) to the signer against a proven ETH
- * deposit. The deposit committed to `sha256` of the signer's address, and
- * the bridge mints what was locked and not yet minted.
+ * The bridge's `mint`: the bridged token (nETH) to the signer against a
+ * proven ETH deposit. The deposit committed to `sha256` of the signer's
+ * address, and the bridge mints what was locked and not yet minted.
  *
- * @param signer The recipient's Tempo signer, holding a fee token.
  * @param bridgeAddress The `NoriTempoTokenBridge` address.
- * @param depositWitness The deposit's witness (`getVerifiedRequestWitness`).
+ * @param depositWitness The deposit's witness (`verifiedWitness`, from `createProofRequestWitnessMachine`).
  * @param proofQueueBatchIndex The committed batch holding the deposit.
- * @returns The transaction's receipt.
- * @throws TempoTransactionRevertedError When the transaction reverted after it was sent.
+ * @returns The call, for `createWalletTransactionMachine` or a signer of the app's own.
  */
-export async function sendMint(
-    signer: ContractRunner,
-    bridgeAddress: string,
-    depositWitness: VerifiedRequestWitness,
-    proofQueueBatchIndex: bigint
-): Promise<ContractTransactionReceipt> {
-    const bridge = NoriTempoTokenBridge__factory.connect(bridgeAddress, signer);
-    return receiptOf(await bridge.mint(depositWitness, proofQueueBatchIndex));
-}
+export const mintCall =
+    (bridgeAddress: string, depositWitness: VerifiedRequestWitness, proofQueueBatchIndex: bigint): TokenBridgeCall =>
+    (signer) =>
+        defer(() => NoriTempoTokenBridge__factory.connect(bridgeAddress, signer).mint(depositWitness, proofQueueBatchIndex));
 
 /**
- * Mints an Ethereum ERC-20's TIP-20 mirror to the signer against a proven
- * `lockERC20` deposit, as `sendMint` does for ETH.
+ * The bridge's `mintERC20`: an Ethereum ERC-20's TIP-20 mirror to the
+ * signer against a proven `lockERC20` deposit, as `mintCall` for ETH.
  *
- * @param signer The recipient's Tempo signer, holding a fee token.
  * @param bridgeAddress The `NoriTempoTokenBridge` address.
- * @param depositWitness The deposit's witness (`getVerifiedRequestWitness`).
+ * @param depositWitness The deposit's witness (`verifiedWitness`, from `createProofRequestWitnessMachine`).
  * @param proofQueueBatchIndex The committed batch holding the deposit.
- * @returns The transaction's receipt.
- * @throws TempoTransactionRevertedError When the transaction reverted after it was sent.
+ * @returns The call, for `createWalletTransactionMachine` or a signer of the app's own.
  */
-export async function sendMintERC20(
-    signer: ContractRunner,
-    bridgeAddress: string,
-    depositWitness: VerifiedRequestWitness,
-    proofQueueBatchIndex: bigint
-): Promise<ContractTransactionReceipt> {
-    const bridge = NoriTempoTokenBridge__factory.connect(bridgeAddress, signer);
-    return receiptOf(await bridge.mintERC20(depositWitness, proofQueueBatchIndex));
-}
+export const mintERC20Call =
+    (bridgeAddress: string, depositWitness: VerifiedRequestWitness, proofQueueBatchIndex: bigint): TokenBridgeCall =>
+    (signer) =>
+        defer(() =>
+            NoriTempoTokenBridge__factory.connect(bridgeAddress, signer).mintERC20(depositWitness, proofQueueBatchIndex)
+        );
 
 /**
- * Pauses or unpauses an ERC-20's mirror to match its proven pause state
- * (`NoriTokenBridge.syncPause` on Ethereum). Anyone may send it; the batch
- * must be newer than the last one applied for the token.
+ * The bridge's `applyPause`: an ERC-20's mirror paused or unpaused to match
+ * its proven pause state (`NoriTokenBridge.syncPause` on Ethereum). Anyone
+ * may send it; the batch must be newer than the last one applied for the
+ * token.
  *
- * @param signer Any Tempo signer holding a fee token.
  * @param bridgeAddress The `NoriTempoTokenBridge` address.
- * @param pauseWitness The pause state's witness (`getVerifiedRequestWitness`).
+ * @param pauseWitness The pause state's witness (`verifiedWitness`, from `createProofRequestWitnessMachine`).
  * @param proofQueueBatchIndex The committed batch holding the pause state.
- * @returns The transaction's receipt.
- * @throws TempoTransactionRevertedError When the transaction reverted after it was sent.
+ * @returns The call, for `createWalletTransactionMachine` or a signer of the app's own.
  */
-export async function sendApplyPause(
-    signer: ContractRunner,
-    bridgeAddress: string,
-    pauseWitness: VerifiedRequestWitness,
-    proofQueueBatchIndex: bigint
-): Promise<ContractTransactionReceipt> {
-    const bridge = NoriTempoTokenBridge__factory.connect(bridgeAddress, signer);
-    return receiptOf(await bridge.applyPause(pauseWitness, proofQueueBatchIndex));
-}
+export const applyPauseCall =
+    (bridgeAddress: string, pauseWitness: VerifiedRequestWitness, proofQueueBatchIndex: bigint): TokenBridgeCall =>
+    (signer) =>
+        defer(() =>
+            NoriTempoTokenBridge__factory.connect(bridgeAddress, signer).applyPause(pauseWitness, proofQueueBatchIndex)
+        );

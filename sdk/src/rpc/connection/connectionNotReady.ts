@@ -1,3 +1,5 @@
+import { type GraphState } from '../../utils/machines.js';
+
 /** A transport, by chain and kind. */
 export type TransportName =
     | 'ethereum.http'
@@ -14,7 +16,7 @@ export type EvmChainName = 'ethereum' | 'tempo';
 /** A transport's state when it was asked for: a node of its machine, or not configured. */
 export interface TransportState {
     transport: TransportName;
-    state: { node: string; data: unknown };
+    state: GraphState;
 }
 
 /**

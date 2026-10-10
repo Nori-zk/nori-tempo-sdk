@@ -8,14 +8,14 @@ export interface ITIP20Factory$Type {
   readonly _format: "hh3-artifact-1";
   readonly contractName: "ITIP20Factory";
   readonly sourceName: "contracts/interfaces/ITIP20Factory.sol";
-  readonly abi: [{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"string","name":"name","type":"string"},{"indexed":false,"internalType":"string","name":"symbol","type":"string"},{"indexed":false,"internalType":"string","name":"currency","type":"string"},{"indexed":false,"internalType":"contract ITIP20","name":"quoteToken","type":"address"},{"indexed":false,"internalType":"address","name":"admin","type":"address"},{"indexed":false,"internalType":"bytes32","name":"salt","type":"bytes32"}],"name":"TokenCreated","type":"event"},{"inputs":[{"internalType":"string","name":"name","type":"string"},{"internalType":"string","name":"symbol","type":"string"},{"internalType":"string","name":"currency","type":"string"},{"internalType":"contract ITIP20","name":"quoteToken","type":"address"},{"internalType":"address","name":"admin","type":"address"},{"internalType":"bytes32","name":"salt","type":"bytes32"}],"name":"createToken","outputs":[{"internalType":"address","name":"token","type":"address"}],"stateMutability":"nonpayable","type":"function"}];
+  readonly abi: [{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"string","name":"name","type":"string"},{"indexed":false,"internalType":"string","name":"symbol","type":"string"},{"indexed":false,"internalType":"string","name":"currency","type":"string"},{"indexed":false,"internalType":"contract ITIP20","name":"quoteToken","type":"address"},{"indexed":false,"internalType":"address","name":"admin","type":"address"},{"indexed":false,"internalType":"bytes32","name":"salt","type":"bytes32"}],"name":"TokenCreated","type":"event"},{"inputs":[{"internalType":"string","name":"name","type":"string"},{"internalType":"string","name":"symbol","type":"string"},{"internalType":"string","name":"currency","type":"string"},{"internalType":"contract ITIP20","name":"quoteToken","type":"address"},{"internalType":"address","name":"admin","type":"address"},{"internalType":"bytes32","name":"salt","type":"bytes32"}],"name":"createToken","outputs":[{"internalType":"address","name":"token","type":"address"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"token","type":"address"}],"name":"isTIP20","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"}];
   readonly bytecode: "0x";
   readonly deployedBytecode: "0x";
   readonly linkReferences: {};
   readonly deployedLinkReferences: {};
   readonly immutableReferences: {};
   readonly inputSourceName: "project/contracts/interfaces/ITIP20Factory.sol";
-  readonly buildInfoId: "solc-0_8_28-e9674a2cc46a0743bd7c39f3da8bfea080a60359";
+  readonly buildInfoId: "solc-0_8_28-9e330e9b1e2721c968bf1b8a9fb6af8f4ac17055";
 };
 
 import "hardhat/types/artifacts";

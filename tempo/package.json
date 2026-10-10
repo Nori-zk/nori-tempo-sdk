@@ -1,6 +1,6 @@
 {
     "name": "@nori-zk/tempo-token-bridge",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "description": "NoriTempoTokenBridge contract and the SP1 Groth16 verifier it uses on Tempo",
     "main": "build/index.js",
     "exports": {
@@ -23,7 +23,9 @@
         "format": "prettier --check --ignore-unknown **/*",
         "format:fix": "prettier --write --ignore-unknown **/*",
         "deploy": "dotenv -e .env -- sh -c 'npx hardhat --network $TEMPO_NETWORK deploy \"$@\"' --",
-        "register-mirror": "dotenv -e .env -- sh -c 'npx hardhat --network $TEMPO_NETWORK registerMirror \"$@\"' --"
+        "register-mirror": "dotenv -e .env -- sh -c 'npx hardhat --network $TEMPO_NETWORK registerMirror \"$@\"' --",
+        "create-issuer-tip20": "dotenv -e .env -- sh -c 'npx hardhat --network $TEMPO_NETWORK createIssuerTip20 \"$@\"' --",
+        "adopt-mirror": "dotenv -e .env -- sh -c 'npx hardhat --network $TEMPO_NETWORK adoptMirror \"$@\"' --"
     },
     "author": "",
     "license": "MIT",

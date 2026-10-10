@@ -46,3 +46,26 @@ export async function fetchErc20MintedSoFar(
         throw new EthRpcTransportError('Failed to read the minted ERC-20 mirror amount.', error);
     });
 }
+
+/**
+ * Reads how much of an Ethereum ERC-20's mirror the bridge has minted, to
+ * every recipient, in bridge units, which are the mirror's units. It is never
+ * more than the ERC-20's `totalLockedERC20BU` on Ethereum; the difference is
+ * locked but not claimed yet.
+ *
+ * @param provider The Tempo provider used for the read.
+ * @param bridgeAddress The `NoriTempoTokenBridge` address.
+ * @param ethToken The Ethereum ERC-20.
+ * @returns The amount minted.
+ * @throws EthRpcTransportError When the read still fails after its retries.
+ */
+export async function fetchErc20TotalMinted(
+    provider: EthereumProvider,
+    bridgeAddress: string,
+    ethToken: string
+): Promise<bigint> {
+    const bridge = NoriTempoTokenBridge__factory.connect(bridgeAddress, provider);
+    return withBackoff(() => bridge.erc20TotalMinted(ethToken)).catch((error: unknown) => {
+        throw new EthRpcTransportError('Failed to read the total minted ERC-20 mirror amount.', error);
+    });
+}

@@ -6,13 +6,14 @@ import type { TypedContractEvent, TypedDeferredTopicFilter, TypedEventLog, Typed
   
 
   export interface ITIP20Interface extends Interface {
-    getFunction(nameOrSignature: "balanceOf" | "decimals" | "grantRole" | "mint" | "pause" | "paused" | "totalSupply" | "unpause"): FunctionFragment;
+    getFunction(nameOrSignature: "balanceOf" | "decimals" | "grantRole" | "hasRole" | "mint" | "pause" | "paused" | "totalSupply" | "unpause"): FunctionFragment;
 
     
 
     encodeFunctionData(functionFragment: 'balanceOf', values: [AddressLike]): string;
 encodeFunctionData(functionFragment: 'decimals', values?: undefined): string;
 encodeFunctionData(functionFragment: 'grantRole', values: [BytesLike, AddressLike]): string;
+encodeFunctionData(functionFragment: 'hasRole', values: [AddressLike, BytesLike]): string;
 encodeFunctionData(functionFragment: 'mint', values: [AddressLike, BigNumberish]): string;
 encodeFunctionData(functionFragment: 'pause', values?: undefined): string;
 encodeFunctionData(functionFragment: 'paused', values?: undefined): string;
@@ -22,6 +23,7 @@ encodeFunctionData(functionFragment: 'unpause', values?: undefined): string;
     decodeFunctionResult(functionFragment: 'balanceOf', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'decimals', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'grantRole', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'hasRole', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'mint', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'pause', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'paused', data: BytesLike): Result;
@@ -89,6 +91,14 @@ decodeFunctionResult(functionFragment: 'unpause', data: BytesLike): Result;
     
 
     
+    hasRole: TypedContractMethod<
+      [account: AddressLike, role: BytesLike, ],
+      [boolean],
+      'view'
+    >
+    
+
+    
     mint: TypedContractMethod<
       [to: AddressLike, amount: BigNumberish, ],
       [void],
@@ -145,6 +155,11 @@ getFunction(nameOrSignature: 'grantRole'): TypedContractMethod<
       [role: BytesLike, account: AddressLike, ],
       [void],
       'nonpayable'
+    >;
+getFunction(nameOrSignature: 'hasRole'): TypedContractMethod<
+      [account: AddressLike, role: BytesLike, ],
+      [boolean],
+      'view'
     >;
 getFunction(nameOrSignature: 'mint'): TypedContractMethod<
       [to: AddressLike, amount: BigNumberish, ],

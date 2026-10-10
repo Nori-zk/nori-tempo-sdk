@@ -51,12 +51,14 @@ import {
     bothReady$,
     createConnections,
     getErc20MintedSoFar,
+    getErc20TotalMinted,
     getFeeToken,
     getLastPauseApplied,
     getMintedSoFar,
     getMirror,
     getProofRequestStateSnapshot,
     getTokenBalance,
+    getTokenPaused,
     getVerifiedRequestWitness,
     mint,
     mintERC20,
@@ -306,6 +308,7 @@ describe('Token bridge through the sdk on local Ethereum and Tempo nodes', () =>
         expect(mirror).toBe(await NoriTempoTokenBridge__factory.connect(bridgeAddress, tempoProvider).mirrorOf(USDC));
         await mintERC20(tempoSigner, bridgeAddress, witness, proofAvailable.proofQueueBatchIndex);
         expect(await getErc20MintedSoFar(connections.tempo, bridgeAddress, USDC, tempoSigner.address)).toBe(USDC_LOCKED);
+        expect(await getErc20TotalMinted(connections.tempo, bridgeAddress, USDC)).toBe(USDC_LOCKED);
         expect(await getTokenBalance(connections.tempo, mirror, tempoSigner.address)).toBe(USDC_LOCKED);
     });
 
@@ -319,6 +322,7 @@ describe('Token bridge through the sdk on local Ethereum and Tempo nodes', () =>
         await applyPause(tempoSigner, bridgeAddress, witness, proofAvailable.proofQueueBatchIndex);
         const mirror = present(await getMirror(connections.tempo, bridgeAddress, USDC), 'USDC mirror');
         expect(await ITIP20__factory.connect(mirror, tempoProvider).paused()).toBe(true);
+        expect(await getTokenPaused(connections.tempo, mirror)).toBe(true);
         expect(await getLastPauseApplied(connections.tempo, bridgeAddress, USDC)).toEqual({
             applied: true,
             proofQueueBatchIndex: proofAvailable.proofQueueBatchIndex,

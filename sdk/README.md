@@ -401,8 +401,10 @@ if (request.state === ProofRequestState.ProofAvailable) {
 | --- | --- |
 | `getMintedSoFar(tempo, bridgeAddress, recipient)`: nETH minted so far | `mint(signer, bridgeAddress, depositWitness, proofQueueBatchIndex)` |
 | `getErc20MintedSoFar(tempo, bridgeAddress, ethToken, recipient)`: a mirror minted so far | `mintERC20(signer, bridgeAddress, depositWitness, proofQueueBatchIndex)` |
-| `getMirror(tempo, bridgeAddress, ethToken)`: an ERC-20's TIP-20 mirror, `undefined` until registered | `applyPause(signer, bridgeAddress, pauseWitness, proofQueueBatchIndex)` |
+| `getMirror(tempo, bridgeAddress, ethToken)`: an ERC-20's TIP-20 mirror (created or adopted), `undefined` until registered | `applyPause(signer, bridgeAddress, pauseWitness, proofQueueBatchIndex)` |
+| `getErc20TotalMinted(tempo, bridgeAddress, ethToken)`: a mirror minted to everyone, never more than locked on Ethereum | |
 | `getLastPauseApplied(tempo, bridgeAddress, ethToken)`: the batch whose pause state the mirror last followed | |
+| `getTokenPaused(tempo, token)`: whether a TIP-20 (a mirror) is paused | |
 | `getTokenBalance(tempo, token, account)`: a TIP-20 balance (nETH, a mirror, a fee token) | |
 | `getFeeToken(tempo, account)`: the fee token the account chose, `undefined` when none | |
 

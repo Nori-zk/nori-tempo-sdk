@@ -26,4 +26,7 @@ interface ITIP20Factory {
         address admin,
         bytes32 salt
     ) external returns (address token);
+
+    /// @notice Whether `token` is a TIP-20: the TIP-20 address prefix, with code deployed.
+    function isTIP20(address token) external view returns (bool);
 }

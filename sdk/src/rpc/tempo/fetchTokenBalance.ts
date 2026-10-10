@@ -26,6 +26,22 @@ export async function fetchTokenBalance(
 }
 
 /**
+ * Reads whether a TIP-20 is paused: an ERC-20's mirror is while its proven
+ * pause state is paused, and then nobody can move, mint or burn it.
+ *
+ * @param provider The Tempo provider used for the read.
+ * @param token The TIP-20.
+ * @returns Whether it is paused.
+ * @throws EthRpcTransportError When the read still fails after its retries.
+ */
+export async function fetchTokenPaused(provider: EthereumProvider, token: string): Promise<boolean> {
+    const tip20 = ITIP20__factory.connect(token, provider);
+    return withBackoff(() => tip20.paused()).catch((error: unknown) => {
+        throw new EthRpcTransportError('Failed to read whether the token is paused.', error);
+    });
+}
+
+/**
  * Reads the USD TIP-20 an account chose to pay its Tempo transaction fees
  * in, from Tempo's fee manager precompile.
  *

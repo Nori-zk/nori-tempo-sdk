@@ -1,8 +1,8 @@
 import { type ContractRunner, type ContractTransactionReceipt } from 'ethers';
 import { forCalls, type Tempo } from '../rpc/connection/connections.js';
-import { fetchErc20MintedSoFar, fetchMintedSoFar } from '../rpc/tempo/fetchMintedSoFar.js';
+import { fetchErc20MintedSoFar, fetchErc20TotalMinted, fetchMintedSoFar } from '../rpc/tempo/fetchMintedSoFar.js';
 import { fetchLastPauseApplied, fetchMirror, type LastPauseApplied } from '../rpc/tempo/fetchMirror.js';
-import { fetchFeeToken, fetchTokenBalance } from '../rpc/tempo/fetchTokenBalance.js';
+import { fetchFeeToken, fetchTokenBalance, fetchTokenPaused } from '../rpc/tempo/fetchTokenBalance.js';
 import { sendApplyPause, sendMint, sendMintERC20 } from '../rpc/tempo/tokenBridgeTransactions.js';
 import { type VerifiedRequestWitness } from '../proofRequest/getProofRequestStateSnapshot.js';
 
@@ -40,7 +40,24 @@ export function getErc20MintedSoFar(
 }
 
 /**
- * The TIP-20 mirror of an Ethereum ERC-20.
+ * How much of an Ethereum ERC-20's mirror the bridge has minted, to every
+ * recipient. It is never more than the ERC-20's `totalLockedERC20BU` on
+ * Ethereum; the difference is locked but not claimed yet. For a mirror the
+ * bridge created it is the mirror's whole supply; an issuer's own adopted
+ * TIP-20 can also hold supply the issuer minted itself.
+ *
+ * @param tempo The Tempo chain.
+ * @param bridgeAddress The `NoriTempoTokenBridge` address.
+ * @param ethToken The Ethereum ERC-20.
+ * @returns The amount, in the mirror's units.
+ */
+export function getErc20TotalMinted(tempo: Tempo, bridgeAddress: string, ethToken: string): Promise<bigint> {
+    return forCalls(tempo, fetchErc20TotalMinted, bridgeAddress, ethToken);
+}
+
+/**
+ * The TIP-20 mirror of an Ethereum ERC-20: one the bridge created
+ * (`registerMirror`), or the issuer's own TIP-20 it adopted (`adoptMirror`).
  *
  * @param tempo The Tempo chain.
  * @param bridgeAddress The `NoriTempoTokenBridge` address.
@@ -77,6 +94,18 @@ export function getLastPauseApplied(
  */
 export function getTokenBalance(tempo: Tempo, token: string, account: string): Promise<bigint> {
     return forCalls(tempo, fetchTokenBalance, token, account);
+}
+
+/**
+ * Whether a TIP-20 is paused. An ERC-20's mirror is paused while its last
+ * applied pause state is paused; nobody can then move, mint or burn it.
+ *
+ * @param tempo The Tempo chain.
+ * @param token The TIP-20.
+ * @returns Whether it is paused.
+ */
+export function getTokenPaused(tempo: Tempo, token: string): Promise<boolean> {
+    return forCalls(tempo, fetchTokenPaused, token);
 }
 
 /**

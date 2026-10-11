@@ -21,10 +21,16 @@ import {ITIP20Factory} from "./interfaces/ITIP20Factory.sol";
 ///      The proof's public values are nori-primitives' `ProofOutputs`: 220
 ///      bytes at fixed big-endian offsets, read here by slicing calldata.
 ///
-///      Each ERC-20 locked on Ethereum is mirrored here by its own TIP-20,
-///      created by `registerMirror`, with this contract as its admin, issuer
-///      and pauser. `mintERC20` mints it against a proven `[codeChallenge,
-///      token]` deposit, and `applyPause` pauses or unpauses it from a proven
+///      Each ERC-20 locked on Ethereum is mirrored here by its own TIP-20:
+///      the bridge adapter of Tempo's ERC-20 migration guide. Either the
+///      bridge creates it (`registerMirror`), with this contract as its
+///      admin, issuer and pauser, or the ERC-20's issuer creates it through
+///      `TIP20Factory` with its own admin, grants this contract
+///      `ISSUER_ROLE`, `PAUSE_ROLE` and `UNPAUSE_ROLE`, and the mirror admin
+///      adopts it (`adoptMirror`); the issuer then keeps the token's
+///      configuration (TIP-403 transfer policy, supply cap, logo, roles).
+///      `mintERC20` mints it against a proven `[codeChallenge, token]`
+///      deposit, and `applyPause` pauses or unpauses it from a proven
 ///      `[PAUSE_KEY, token]` pause state, so it follows the ERC-20's pause.
 ///      The leaves are told apart by their collection keys: an ETH deposit
 ///      has one key, an ERC-20 deposit two, and a pause state two starting
@@ -147,6 +153,9 @@ contract NoriTempoTokenBridge {
     // ERC-20 mirrors
     error NotMirrorAdmin(address caller, address mirrorAdmin);
     error MirrorExists(address ethToken, ITIP20 mirror);
+    error AlreadyAMirror(ITIP20 tip20, address ethToken);
+    error NotTIP20(address tip20);
+    error MissingMirrorRole(ITIP20 tip20, bytes32 role);
     error NoMirror(address ethToken);
     error InvalidTokenKey(bytes32 key);
     error NotPauseState(bytes32 key);
@@ -188,6 +197,9 @@ contract NoriTempoTokenBridge {
     /// @notice `mirror` was created for the Ethereum ERC-20 `ethToken`.
     event MirrorRegistered(address indexed ethToken, ITIP20 indexed mirror, string name, string symbol);
 
+    /// @notice The issuer's own TIP-20 `mirror` was adopted as the mirror of the Ethereum ERC-20 `ethToken`.
+    event MirrorAdopted(address indexed ethToken, ITIP20 indexed mirror);
+
     /// @notice `ethToken`'s mirror was minted to `recipient` against a proven ERC-20 deposit.
     event ERC20MintApplied(
         address indexed ethToken,
@@ -225,8 +237,9 @@ contract NoriTempoTokenBridge {
     // `_proofQueueBatches` (entry at keccak256(index, 3): the root, then
     // `outputBlockNumber | inputQueueCursor << 64 | outputQueueCursor << 128 |
     // tempoBlockNumber << 192`), slot 4 `mintedSoFar`, slot 5 `mirrorOf`,
-    // slot 6 `erc20MintedSoFar`, slot 7 `_pauseAppliedPlusOne`. Reordering
-    // the state variables changes these.
+    // slot 6 `erc20MintedSoFar`, slot 7 `_pauseAppliedPlusOne`, slot 8
+    // `ethTokenOf`, slot 9 `erc20TotalMinted`. Reordering the state
+    // variables changes these.
     bytes32 public verifiedStateRoot;
     bytes32 public latestHeliosStoreInputHash;
     uint64 public latestHead;
@@ -246,6 +259,14 @@ contract NoriTempoTokenBridge {
 
     /// @dev Ethereum ERC-20 -> one past the batch index of its last applied pause state; 0 when none.
     mapping(address => uint64) internal _pauseAppliedPlusOne;
+
+    /// @notice TIP-20 mirror -> the Ethereum ERC-20 it mirrors; zero for any other TIP-20.
+    mapping(ITIP20 => address) public ethTokenOf;
+
+    /// @notice Ethereum ERC-20 -> bridge units of its mirror minted by this
+    ///         contract, to every recipient. Never more than the ERC-20's
+    ///         `NoriTokenBridge.totalLockedERC20BU` on Ethereum.
+    mapping(address => uint64) public erc20TotalMinted;
 
     // -------------------------------
     // Constructor
@@ -386,11 +407,16 @@ contract NoriTempoTokenBridge {
     // -------------------------------
     /// @notice Creates the TIP-20 mirror of the Ethereum ERC-20 `ethToken`,
     ///         with this contract as its admin, issuer and pauser. Only the
-    ///         mirror admin; once per ERC-20.
+    ///         mirror admin; once per ERC-20. Nobody else can change its
+    ///         configuration; an issuer that wants to keep it uses
+    ///         `adoptMirror` instead.
     /// @param ethToken The Ethereum ERC-20 `NoriTokenBridge.lockERC20` locks.
     /// @param name The mirror's name.
     /// @param symbol The mirror's symbol.
-    /// @param currency The mirror's TIP-20 currency; `"USD"` lets it pay Tempo fees.
+    /// @param currency The mirror's TIP-20 currency, immutable: what one unit
+    ///        stays about 1:1 with (`"USD"` for a USD stablecoin, `"BTC"` for
+    ///        wrapped bitcoin, its own symbol for an accumulating token). Only
+    ///        `"USD"` tokens pay Tempo fees and trade on its stablecoin DEX.
     /// @param salt The TIP-20 factory salt.
     /// @return mirror The new TIP-20.
     function registerMirror(
@@ -409,8 +435,43 @@ contract NoriTempoTokenBridge {
         mirror.grantRole(PAUSE_ROLE, address(this));
         mirror.grantRole(UNPAUSE_ROLE, address(this));
         mirrorOf[ethToken] = mirror;
+        ethTokenOf[mirror] = ethToken;
 
         emit MirrorRegistered(ethToken, mirror, name, symbol);
+    }
+
+    /// @notice Adopts the issuer's own TIP-20 `tip20` as the mirror of the
+    ///         Ethereum ERC-20 `ethToken`. Only the mirror admin; once per
+    ///         ERC-20, and a TIP-20 mirrors one ERC-20 at most.
+    /// @dev The issuer creates `tip20` through `TIP20Factory` with its own
+    ///      admin and grants this contract `ISSUER_ROLE` (to mint against
+    ///      proven deposits), `PAUSE_ROLE` and `UNPAUSE_ROLE` (to follow the
+    ///      ERC-20's pause) first; this checks all three. The issuer keeps
+    ///      `DEFAULT_ADMIN_ROLE`: the transfer policy, supply cap, logo and
+    ///      roles stay its own, so it can also revoke the bridge's roles. A
+    ///      mint the supply cap or the transfer policy refuses reverts and
+    ///      can be claimed again once they allow it.
+    /// @param ethToken The Ethereum ERC-20 `NoriTokenBridge.lockERC20` locks.
+    /// @param tip20 The issuer's TIP-20.
+    function adoptMirror(address ethToken, ITIP20 tip20) external {
+        if (msg.sender != mirrorAdmin) revert NotMirrorAdmin(msg.sender, mirrorAdmin);
+        if (ethToken == address(0) || address(tip20) == address(0)) revert ZeroAddress();
+        if (address(mirrorOf[ethToken]) != address(0)) revert MirrorExists(ethToken, mirrorOf[ethToken]);
+        if (ethTokenOf[tip20] != address(0)) revert AlreadyAMirror(tip20, ethTokenOf[tip20]);
+        if (tip20 == token || !TIP20_FACTORY.isTIP20(address(tip20))) revert NotTIP20(address(tip20));
+        _requireMirrorRole(tip20, ISSUER_ROLE);
+        _requireMirrorRole(tip20, PAUSE_ROLE);
+        _requireMirrorRole(tip20, UNPAUSE_ROLE);
+
+        mirrorOf[ethToken] = tip20;
+        ethTokenOf[tip20] = ethToken;
+
+        emit MirrorAdopted(ethToken, tip20);
+    }
+
+    /// @dev This contract holds `role` on `tip20` (TIP-20's `hasRole` takes the account first).
+    function _requireMirrorRole(ITIP20 tip20, bytes32 role) internal view {
+        if (!tip20.hasRole(address(this), role)) revert MissingMirrorRole(tip20, role);
     }
 
     /// @notice Mints an ERC-20's mirror to the caller against a proven
@@ -431,6 +492,7 @@ contract NoriTempoTokenBridge {
         uint64 amountToMint = _mintDelta(lockedSoFar, erc20MintedSoFar[ethToken][msg.sender]);
 
         erc20MintedSoFar[ethToken][msg.sender] = lockedSoFar;
+        erc20TotalMinted[ethToken] += amountToMint;
         mirror.mint(msg.sender, amountToMint);
 
         emit ERC20MintApplied(ethToken, msg.sender, root, amountToMint, lockedSoFar);

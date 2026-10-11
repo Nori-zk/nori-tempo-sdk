@@ -220,19 +220,60 @@ same ERC-20 reverts with `MirrorExists`.
 [RegisterMirror] Mirror of 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48: 0x20C0000000000000000000003E14745cBAe3d986 (nUSDC), block 1161
 ```
 
+### Or adopt the issuer's own TIP-20
+
+When the ERC-20's issuer wants to keep the TIP-20's admin (its TIP-403
+transfer policy, supply cap, logo and roles), it creates the TIP-20 itself
+and the bridge adopts it instead. The issuer, with its own key as
+`TEMPO_PRIVATE_KEY` and `NORI_TEMPO_TOKEN_BRIDGE_ADDRESS` set:
+
+```bash
+cd tempo
+npm run create-issuer-tip20 -- <name> <symbol> <currency>
+```
+
+It creates the TIP-20 through `TIP20Factory` with the issuer as admin and
+pathUSD as quote token, and grants the bridge `ISSUER_ROLE`, `PAUSE_ROLE` and
+`UNPAUSE_ROLE`. An issuer with its own tooling does the same with
+`createToken` and three `grantRole`s. Then the bridge's deployer:
+
+```bash
+npm run adopt-mirror -- <ethToken> <tip20>
+```
+
+`adoptMirror` reverts with `MissingMirrorRole` while any of the three roles
+is missing, with `NotTIP20` for an address `TIP20Factory.isTIP20` does not
+recognise (or nETH), and with `AlreadyAMirror` for a TIP-20 that already
+mirrors another ERC-20. The issuer stays responsible for its configuration:
+a supply cap below what holders lock, or a transfer policy that refuses a
+recipient, holds that recipient's mint back until it changes, and revoking
+the bridge's `ISSUER_ROLE` stops minting.
+
+*Output on a local `anvil --network tempo`:*
+
+```
+[AdoptMirror] iUSD created at 0x20c00000000000000000000040BAEbA328426966, admin 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+[AdoptMirror] Granted ISSUER_ROLE to NoriTempoTokenBridge 0x976C214741b4657bd99DFD38a5c0E3ac5C99D903
+[AdoptMirror] Granted PAUSE_ROLE to NoriTempoTokenBridge 0x976C214741b4657bd99DFD38a5c0E3ac5C99D903
+[AdoptMirror] Granted UNPAUSE_ROLE to NoriTempoTokenBridge 0x976C214741b4657bd99DFD38a5c0E3ac5C99D903
+[AdoptMirror] Mirror of 0x4444444444444444444444444444444444444444: 0x20c00000000000000000000099A3B48aE6893B1c (adopted), block 295
+```
+
 ### Record
 
-- [ ] Per ERC-20: its Ethereum address, its mirror's address, the mirror's currency
+- [ ] Per ERC-20: its Ethereum address, its mirror's address, the mirror's currency, and whether the bridge created it or adopted the issuer's (and the issuer's admin address)
 
 ### Verify
 
 ```bash
 cast call <Bridge> "mirrorAdmin()(address)"                     # == the deployer
 cast call <Bridge> "mirrorOf(address)(address)" <ethToken>      # == the mirror
+cast call <Bridge> "ethTokenOf(address)(address)" <Mirror>      # == <ethToken>
 cast call <Mirror> "currency()(string)"                         # == <currency>
 cast call <Mirror> "hasRole(address,bytes32)(bool)" <Bridge> $(cast keccak ISSUER_ROLE)    # == true
 cast call <Mirror> "hasRole(address,bytes32)(bool)" <Bridge> $(cast keccak PAUSE_ROLE)     # == true
 cast call <Mirror> "hasRole(address,bytes32)(bool)" <Bridge> $(cast keccak UNPAUSE_ROLE)   # == true
+cast call <Mirror> "hasRole(address,bytes32)(bool)" <Issuer> 0x0000000000000000000000000000000000000000000000000000000000000000   # == true for an adopted mirror
 ```
 
 ---

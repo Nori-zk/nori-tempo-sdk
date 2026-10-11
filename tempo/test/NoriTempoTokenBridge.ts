@@ -41,8 +41,10 @@ import {
 import {
   ISSUER_ROLE_NAME,
   PATH_USD_ADDRESS,
+  PAUSE_ROLE_NAME,
   TIP20_DECIMALS,
   TIP20_FACTORY_ADDRESS,
+  UNPAUSE_ROLE_NAME,
 } from "../contracts/interfaces/ITIP20.const.js";
 
 const { ethers } = await hre.network.getOrCreate();
@@ -794,6 +796,164 @@ describe("NoriTempoTokenBridge", () => {
       await expect(bridge.applyPause(neither, 1n))
         .to.be.revertedWithCustomError(bridge, "InvalidPauseState")
         .withArgs(3n);
+    });
+
+    it("counts every mirror unit it mints, across recipients", async () => {
+      const { bridge, mirror, recipient, other } = await deployWithMirror();
+      const [mine, theirs] = await plantOneRequestBatches(await bridge.getAddress(), [
+        erc20Deposit(recipient.address, ETH_TOKEN, 1_500_000n),
+        erc20Deposit(other.address, ETH_TOKEN, 700_000n),
+      ]);
+      await (await bridge.connect(recipient).mintERC20(mine, 0n)).wait();
+      await (await bridge.connect(other).mintERC20(theirs, 1n)).wait();
+      expect(await bridge.erc20TotalMinted(ETH_TOKEN)).to.equal(2_200_000n);
+      expect(await mirror.totalSupply()).to.equal(2_200_000n);
+      expect(await bridge.ethTokenOf(await mirror.getAddress())).to.equal(ethers.getAddress(ETH_TOKEN));
+    });
+
+    describe("an issuer's own TIP-20 (adoptMirror)", () => {
+      const PAUSE_ROLE = ethers.id(PAUSE_ROLE_NAME);
+      const UNPAUSE_ROLE = ethers.id(UNPAUSE_ROLE_NAME);
+      const DEFAULT_ADMIN_ROLE = ethers.ZeroHash;
+
+      /**
+       * The issuer's TIP-20, created through TIP20Factory with the issuer as
+       * its admin, and the roles it grants the bridge.
+       */
+      async function issuerTip20(
+        bridgeAddress: string,
+        issuer: Awaited<ReturnType<typeof deployBridge>>["other"],
+        roles: string[] = [ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE]
+      ) {
+        const factory = ITIP20Factory__factory.connect(TIP20_FACTORY_ADDRESS, issuer);
+        const args = ["Issuer USD", "iUSD", "USD", PATH_USD_ADDRESS, issuer.address, ethers.hexlify(randomBytes(32))] as const;
+        const address = await factory.createToken.staticCall(...args);
+        await (await factory.createToken(...args)).wait();
+        const tip20 = ITIP20__factory.connect(address, issuer);
+        for (const role of roles) await (await tip20.grantRole(role, bridgeAddress)).wait();
+        return tip20;
+      }
+
+      /** A bridge that adopted the issuer's TIP-20 as the mirror of `ETH_TOKEN`; `other` is the issuer. */
+      async function deployWithAdoptedMirror() {
+        const fixture = await deployBridge();
+        const { bridge, other: issuer } = fixture;
+        const mirror = await issuerTip20(await bridge.getAddress(), issuer);
+        await (await bridge.adoptMirror(ETH_TOKEN, await mirror.getAddress())).wait();
+        return { ...fixture, issuer, mirror };
+      }
+
+      it("adopts it, and the issuer stays its admin", async () => {
+        const { bridge, other: issuer, deployer } = await deployBridge();
+        const tip20 = await issuerTip20(await bridge.getAddress(), issuer);
+        await expect(bridge.adoptMirror(ETH_TOKEN, await tip20.getAddress()))
+          .to.emit(bridge, "MirrorAdopted")
+          .withArgs(ethers.getAddress(ETH_TOKEN), await tip20.getAddress());
+        expect(await bridge.mirrorOf(ETH_TOKEN)).to.equal(await tip20.getAddress());
+        expect(await bridge.ethTokenOf(await tip20.getAddress())).to.equal(ethers.getAddress(ETH_TOKEN));
+        expect(await tip20.hasRole(issuer.address, DEFAULT_ADMIN_ROLE)).to.equal(true);
+        expect(await tip20.hasRole(await bridge.getAddress(), DEFAULT_ADMIN_ROLE)).to.equal(false);
+        expect(await tip20.hasRole(deployer.address, DEFAULT_ADMIN_ROLE)).to.equal(false);
+      });
+
+      it("rejects adopting by anyone but the deployer", async () => {
+        const { bridge, other: issuer, deployer } = await deployBridge();
+        const tip20 = await issuerTip20(await bridge.getAddress(), issuer);
+        await expect(bridge.connect(issuer).adoptMirror(ETH_TOKEN, await tip20.getAddress()))
+          .to.be.revertedWithCustomError(bridge, "NotMirrorAdmin")
+          .withArgs(issuer.address, deployer.address);
+      });
+
+      for (const [name, missing] of [
+        ["ISSUER_ROLE", ISSUER_ROLE_NAME],
+        ["PAUSE_ROLE", PAUSE_ROLE_NAME],
+        ["UNPAUSE_ROLE", UNPAUSE_ROLE_NAME],
+      ] as const) {
+        it(`rejects a TIP-20 that did not grant the bridge ${name}`, async () => {
+          const { bridge, other: issuer } = await deployBridge();
+          const roles = [ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE].filter((role) => role !== ethers.id(missing));
+          const tip20 = await issuerTip20(await bridge.getAddress(), issuer, roles);
+          await expect(bridge.adoptMirror(ETH_TOKEN, await tip20.getAddress()))
+            .to.be.revertedWithCustomError(bridge, "MissingMirrorRole")
+            .withArgs(await tip20.getAddress(), ethers.id(missing));
+        });
+      }
+
+      it("rejects an address that is not a TIP-20, and the bridged nETH", async () => {
+        const { bridge, token } = await deployBridge();
+        const notTip20 = "0x" + "66".repeat(20);
+        await expect(bridge.adoptMirror(ETH_TOKEN, notTip20))
+          .to.be.revertedWithCustomError(bridge, "NotTIP20")
+          .withArgs(ethers.getAddress(notTip20));
+        await expect(bridge.adoptMirror(ETH_TOKEN, await token.getAddress()))
+          .to.be.revertedWithCustomError(bridge, "NotTIP20")
+          .withArgs(await token.getAddress());
+      });
+
+      it("rejects a second mirror of one ERC-20, and one TIP-20 mirroring two ERC-20s", async () => {
+        const { bridge, mirror, issuer } = await deployWithAdoptedMirror();
+        const another = await issuerTip20(await bridge.getAddress(), issuer);
+        await expect(bridge.adoptMirror(ETH_TOKEN, await another.getAddress())).to.be.revertedWithCustomError(
+          bridge,
+          "MirrorExists"
+        );
+        await expect(bridge.registerMirror(ETH_TOKEN, "Again", "AGN", "USD", ethers.hexlify(randomBytes(32)))).to.be.revertedWithCustomError(
+          bridge,
+          "MirrorExists"
+        );
+        await expect(bridge.adoptMirror("0x" + "55".repeat(20), await mirror.getAddress()))
+          .to.be.revertedWithCustomError(bridge, "AlreadyAMirror")
+          .withArgs(await mirror.getAddress(), ethers.getAddress(ETH_TOKEN));
+      });
+
+      it("mints it against proven deposits and follows the ERC-20's pause, as a created mirror does", async () => {
+        const { bridge, mirror, recipient } = await deployWithAdoptedMirror();
+        const [deposit, paused, unpaused] = await plantOneRequestBatches(await bridge.getAddress(), [
+          erc20Deposit(recipient.address, ETH_TOKEN, 1_000_000n),
+          pauseState(ETH_TOKEN, PAUSE_STATE_PAUSED),
+          pauseState(ETH_TOKEN, PAUSE_STATE_UNPAUSED),
+        ]);
+        await expect(bridge.connect(recipient).mintERC20(deposit, 0n)).to.emit(bridge, "ERC20MintApplied");
+        expect(await mirror.balanceOf(recipient.address)).to.equal(1_000_000n);
+        expect(await bridge.erc20TotalMinted(ETH_TOKEN)).to.equal(1_000_000n);
+        await (await bridge.applyPause(paused, 1n)).wait();
+        expect(await mirror.paused()).to.equal(true);
+        await (await bridge.applyPause(unpaused, 2n)).wait();
+        expect(await mirror.paused()).to.equal(false);
+      });
+
+      it("leaves a mint the issuer's supply cap refuses to be claimed once the cap allows it", async () => {
+        const { bridge, mirror, issuer, recipient } = await deployWithAdoptedMirror();
+        const capped = new ethers.Contract(
+          await mirror.getAddress(),
+          ["function setSupplyCap(uint256 newSupplyCap)"],
+          issuer
+        );
+        await (await capped.setSupplyCap(500_000n)).wait();
+        const [deposit] = await plantOneRequestBatches(await bridge.getAddress(), [
+          erc20Deposit(recipient.address, ETH_TOKEN, 1_000_000n),
+        ]);
+        await expect(bridge.connect(recipient).mintERC20(deposit, 0n)).to.be.revert(ethers);
+        expect(await bridge.erc20MintedSoFar(ETH_TOKEN, recipient.address)).to.equal(0n);
+        await (await capped.setSupplyCap(1_000_000n)).wait();
+        await (await bridge.connect(recipient).mintERC20(deposit, 0n)).wait();
+        expect(await mirror.balanceOf(recipient.address)).to.equal(1_000_000n);
+      });
+
+      it("stops minting once the issuer revokes the bridge's ISSUER_ROLE", async () => {
+        const { bridge, mirror, issuer, recipient } = await deployWithAdoptedMirror();
+        const revoke = new ethers.Contract(
+          await mirror.getAddress(),
+          ["function revokeRole(bytes32 role, address account)"],
+          issuer
+        );
+        await (await revoke.revokeRole(ISSUER_ROLE, await bridge.getAddress())).wait();
+        const [deposit] = await plantOneRequestBatches(await bridge.getAddress(), [
+          erc20Deposit(recipient.address, ETH_TOKEN, 1_000_000n),
+        ]);
+        await expect(bridge.connect(recipient).mintERC20(deposit, 0n)).to.be.revert(ethers);
+        expect(await mirror.totalSupply()).to.equal(0n);
+      });
     });
   });
 });

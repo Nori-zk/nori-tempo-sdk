@@ -19,7 +19,7 @@ The package has three entry points:
 - `@nori-zk/nori-bridge-tempo-sdk/utils`: `stateOf$`, `dataOnEntry$`, `atNode`, `AsNodeData`, `StartedMachine` and `GraphState`, for an app's own YState machines;
 - `@nori-zk/nori-bridge-tempo-sdk/program`: the Tempo contracts' ethers types, factories and ABIs (`NoriTempoTokenBridge__factory` and the rest of `@nori-zk/tempo-token-bridge`).
 
-## How a proof request gets proven
+## Nori prover pipeline (`getNoriBridgeInfraTransitions`)
 
 A request enqueued on Ethereum waits for Ethereum to finalize its block. Nori's bridge head then takes the requests enqueued since the last batch as one job, proves Ethereum's state with SP1, and its Tempo processor submits the proof to the bridge contract on Tempo in an `update`, which commits the batch: the queue cursor moves past the requests, and, when the job had any, the contract records their Merkle root as the next proof queue batch. Nori publishes each step as it happens, and the SDK follows them with this machine:
 
@@ -61,7 +61,7 @@ A running machine has:
 - `event$`: emits `{ edge, from, to }` for each move;
 - `status$`: `running`, `complete`, `error` or `stopped`.
 
-### A value read through the connections
+### Read machines (`readThroughConnectionsOf`)
 
 ![Read through connections graph](src/rpc/connection/ReadThroughConnectionsGraph.svg)
 
@@ -79,7 +79,7 @@ Nothing is a dead end: a lost connection is waited for, and a failure retries it
 
 A machine made for one thing holds that thing in its data from its first state on, so its state shows what it is about: a proof request's `proofRequestTxHash`, a witness's `proofAvailable`, a batch's `batch`, a receipt's `transactionHash`, a view's `target`, a balance's `token` and `account`. Contract addresses are the machine's configuration and stay outside its data.
 
-## Connections
+## Connections (`createConnections`)
 
 The app names the transports it has, once, and `createConnections` opens them, each with its own machine:
 
@@ -127,7 +127,7 @@ What comes back has one object per transport, and a status per chain:
 
 `connection` is the transport's running machine (`undefined` for a transport the app left out). Reads go through the machines below, never through a transport directly. The wallet's `ready$()` emits its `BrowserProvider` once, when the wallet is ready, to sign with; otherwise it errors at once with `ConnectionNotReadyError`, whose `notReady` lists the wallet's state, or with `NoWalletConfiguredError` when the app gave no wallet: a setup mistake, not a state to wait out. `nori.bridgeState$` and `nori.finality$` are Nori's `state.bridge` and `state.eth`, each stamped with when it arrived (`{ value, atMs }`), so a time inside it ages from its arrival. `close()` on the top level releases the connections.
 
-### Status
+### Connection status (`createConnectionStatusMachine`)
 
 ![Connection status graph](src/rpc/connection/ConnectionStatusGraph.svg)
 
@@ -139,33 +139,33 @@ What comes back has one object per transport, and a status per chain:
 
 Any of the three moves to any other as the transports change. An app shows these as they are, e.g. green, blue and red. A wallet's own status comes from `walletStatus('ethereum.wallet')` over `ethereum.wallet.connection.state$`, and `createConnectionStatusMachine` builds a status machine over any transports, with `httpStatus`, `websocketStatus`, `walletStatus` and `networkStatus` turning each transport's states into statuses.
 
-### Which transport serves what
+### Transport order per request kind
 
 Calls, log queries and subscriptions can each go over more than one Ethereum transport, in the order the app gives in `order`; the SDK sets none. When only one configured transport can serve a kind of request, that one is used; when several can and no order is given, `createConnections` throws. Signing only ever goes through the wallet: `ethereum.wallet.ready$()` gives its `BrowserProvider`, whose `getSigner()` signs. Tempo is the same kind of chain object over Tempo's transports. By default each kind of request has one transport there: calls and logs over http, subscriptions over the websocket; `tempo.order` changes that. Its wallet serves only the app's own Tempo transactions, since a browser wallet is on one chain at a time and the app signs its Ethereum transactions through it.
 
-Every machine and stream below takes the connections or a chain object (`ethereum`, `tempo`, `nori`) and picks the transport itself. A read runs on the first ready transport in its chain's calls order, or logs order for Ethereum's log queries. When a request in it fails to reach its node, it tells that transport and runs the read again from the start on the next ready one, so one run never mixes nodes. An app's own values are read the same way, as machines (see [An app's own values](#an-apps-own-values)).
+Every machine and stream below takes the connections or a chain object (`ethereum`, `tempo`, `nori`) and picks the transport itself. A read runs on the first ready transport in its chain's calls order, or logs order for Ethereum's log queries. When a request in it fails to reach its node, it tells that transport and runs the read again from the start on the next ready one, so one run never mixes nodes. An app's own values are read the same way, as machines (see [Custom read machines](#custom-read-machines-startreadthroughconnectionsmachine)).
 
 The machines read again when the chain changes: on new blocks and on the contracts' logs. They subscribe to those on the first ready transport in the subscriptions order (the websocket, or the wallet's own `eth_subscribe` where the wallet supports it), move to the next when that one stops being ready and back when a higher one recovers, and while none is ready poll through the calls order.
 
-### Network
+### Network connectivity machine
 
 ![Network graph](src/rpc/connection/NetworkGraph.svg)
 
 Whether the device can reach the internet, in a browser or in Node. It checks for itself by requesting a few well-known endpoints (any one answering means online; set your own with `network.probeUrls`), because a browser reports being online on a network with no internet. The browser's own online and offline events only make it check sooner. While `offline`, every transport pauses, and when it comes back `online` they check again at once.
 
-### HTTP
+### HTTP transport machine
 
 ![HTTP connection graph](src/rpc/connection/HttpConnectionGraph.svg)
 
 Ethereum's and Tempo's http transports. `ready` means a health check passed on the expected network: `eth_chainId` then `eth_blockNumber` (`data.health.blockNumber`). While ready it checks again in the background. `unreachable` and `wrongNetwork` (the endpoint serves another chain; `data.found` and `data.expected` say which) check again after a wait that doubles each time, so an endpoint that comes back, or is fixed, recovers by itself. `data.url` says which endpoint each state is about. A request that fails to reach the node makes it check at once.
 
-### WebSocket
+### WebSocket transport machine
 
 ![WebSocket connection graph](src/rpc/connection/WebSocketConnectionGraph.svg)
 
 Ethereum's, Tempo's and Nori's websockets. `open` means the socket is connected; a socket that closes, errors or stops answering its heartbeat (Nori's ping and pong) drops to `reconnecting`, which connects again after a wait that doubles each time. A subscription is sent again every time the socket opens. `gaveUp` is reached only when `retries.maxAttempts` is set and runs out; the socket's `retry()` starts again. Messages sent while connecting are queued until the socket opens.
 
-### Ethereum wallet
+### Ethereum wallet machine (`ethereum.wallet`)
 
 ![Ethereum wallet graph](src/rpc/eth/EthereumWalletGraph.svg)
 
@@ -194,7 +194,7 @@ ethereum.wallet.connection?.state$.subscribe(({ node }) => {
 });
 ```
 
-#### The wallet's account
+#### Wallet account (`ethereum.wallet.account`, `tempo.wallet.account`)
 
 ![Wallet account graph](src/rpc/eth/WalletAccountGraph.svg)
 
@@ -208,7 +208,7 @@ ethereum.wallet.connection?.state$.subscribe(({ node }) => {
 
 Another failure of the request (e.g. one already pending) goes back to `current`, with the wallet's error in `data.lastShareError` for logs; the app shows the state, not the text.
 
-## Chain changes
+## Chain change machine (`createChainChangesMachine`)
 
 ![Chain changes graph](src/rpc/connection/ChainChangesGraph.svg)
 
@@ -219,7 +219,7 @@ Whether a chain has changed: a new block, or a log matching a filter. It is what
 - `pollFailed`: a poll failed; it polls again after the interval, or subscribes once a transport can.
 - Moving between subscribing and polling counts a change, as one may fall between the two.
 
-## Nori's topics
+## Nori websocket topics
 
 Nori publishes its state on its websocket:
 
@@ -234,39 +234,39 @@ Nori publishes its state on its websocket:
 
 They only exist on Nori's websocket, so they have no polling; its state, timings and Ethereum state replay the latest to each new subscriber.
 
-## Values kept current
+## Chain read machines
 
-### The bridge's state
+### Tempo bridge state (`createBridgeStateMachine`)
 
 ![Bridge state graph](src/proofQueue/BridgeStateGraph.svg)
 
 `createBridgeStateMachine({ ethereum, tempo }, bridgeAddress)` reads the Tempo bridge's `state()` (queue cursor, batch count, latest proven head and root) through Tempo, holds it in `current` as `data.bridgeState`, and reads it again each time an `update` is applied (`UpdateApplied`).
 
-### Ethereum's blocks
+### Ethereum latest and finalized blocks (`createEthereumBlocksMachine`)
 
 ![Ethereum blocks graph](src/proofQueue/EthereumBlocksGraph.svg)
 
 `createEthereumBlocksMachine({ ethereum, tempo })` reads Ethereum's latest and finalized blocks through Ethereum, holds them in `current` as `data.latestBlock` and `data.finalizedBlock`, and reads them again on each new block. A proof request is proven only once its block is finalized.
 
-### The committed batches
+### Committed proof queue batches (`createCommittedProofQueueBatchesMachine`)
 
 ![Committed proof queue batches graph](src/proofQueue/CommittedProofQueueBatchesGraph.svg)
 
 `createCommittedProofQueueBatchesMachine({ ethereum, tempo }, bridgeAddress, fromBlock?)` reads each proof queue batch the bridge commits from its `ProofQueueBatchCommitted` logs, and reads again each time it commits one. `current` holds `data.committed`, the batches committed in the blocks the last read covered (each with its index, root, cursors, Tempo block and transaction); each read starts after the last block read (`data.lastBlock`), so every batch arrives once. The first read covers `fromBlock` (default: the latest block) to the latest block.
 
-### The queue's head
+### Proof queue head (`createProofQueueHeadMachine`)
 
 ![Proof queue head graph](src/proofQueue/ProofQueueHeadGraph.svg)
 
 `createProofQueueHeadMachine({ ethereum, tempo }, proofQueueAddress)` reads the queue's `head` (how many proof requests have ever been enqueued, which is also the next request's id) through Ethereum, holds it in `current` as `data.head`, and reads it again on each `ProofRequested` the queue emits.
 
-### A transaction's receipt
+### Transaction receipt (`createTransactionReceiptMachine`)
 
 ![Transaction receipt graph](src/rpc/connection/TransactionReceiptGraph.svg)
 
-`createTransactionReceiptMachine({ ethereum, tempo }, chain, transactionHash)` reads a transaction's receipt through `chain` (`'ethereum'` or `'tempo'`) and reads it again on each new block of that chain until the transaction is mined. Every state holds the transaction in `data.transactionHash`; `current` holds `data.receipt`: `undefined` until mined, then `{ transactionHash, blockNumber, status }`, which is not read again. On Tempo a mined transaction is final. A transaction the app sends itself is followed by its transaction machine instead (see [Minting and pausing on Tempo](#minting-and-pausing-on-tempo)), which also tells a replaced or dropped transaction.
+`createTransactionReceiptMachine({ ethereum, tempo }, chain, transactionHash)` reads a transaction's receipt through `chain` (`'ethereum'` or `'tempo'`) and reads it again on each new block of that chain until the transaction is mined. Every state holds the transaction in `data.transactionHash`; `current` holds `data.receipt`: `undefined` until mined, then `{ transactionHash, blockNumber, status }`, which is not read again. On Tempo a mined transaction is final. A transaction the app sends itself is followed by its transaction machine instead (see [Minting and pausing on Tempo](#minting-and-pausing-on-tempo-mintcall-minterc20call-applypausecall)), which also tells a replaced or dropped transaction.
 
-## Following one proof request
+## Proof request state (`createProofRequestStateMachine`)
 
 ![Proof request state graph](src/proofRequest/ProofRequestStateGraph.svg)
 
@@ -284,7 +284,7 @@ Every state holds the enqueuing transaction's hash in `data.proofRequestTxHash`.
 
 Lost connections and failed reads are the waiting and failed states above. To resume a request whose snapshot the app already knows, pass it as the third argument: an `undetermined` or `unprocessed` one starts in `current`, a proven one in `proofAvailable`, instead of looking the request up.
 
-### The proven request's witness
+### Proof request witness (`createProofRequestWitnessMachine`)
 
 ![Proof request witness graph](src/proofRequest/ProofRequestWitnessGraph.svg)
 
@@ -336,7 +336,7 @@ const verifiedWitness$ = witnessState$.pipe(
 );
 ```
 
-### While unprocessed: what it is waiting on
+### Unprocessed proof request progress (`createUnprocessedProofRequestStateMachine`)
 
 ![Unprocessed proof request state graph](src/proofRequest/UnprocessedProofRequestStateGraph.svg)
 
@@ -344,7 +344,7 @@ Nori's bridge infra state says what an unprocessed request is waiting on: Ethere
 
 Nori creates a job on each Ethereum finality transition, one epoch (`ETHEREUM_EPOCH_SEC`, 384 s) after the last, proving the epoch's blocks, and commits it on Tempo when it finishes; a job takes at most `MAX_BATCH_SIZE` (2¹⁶) requests. A job goes through the stages in `NORI_JOB_STAGES`: proving it (`BridgeHeadJobCreated`, `BridgeHeadJobSucceeded`), then submitting it to Tempo (`EthProcessorTransactionSubmitting`, `EthProcessorTransactionSubmitSucceeded`); it is committed when it reaches `EthProcessorTransactionFinalizationSucceeded`. `getCommitTimes(stage, timings)` gives, from where Nori is in its loop, the seconds until the job it is running is committed and until the next job is committed. `jobTimingsOf(timings)` gives the seconds each job stage takes: Nori's timings where it reports them, and `FALLBACK_NORI_JOB_TIMINGS` (a proof about two minutes, submitting to Tempo about a second) otherwise. `getFinalityTimeRemainingSec(blockNumber, finality)` gives the seconds until a block is finalized.
 
-## The bridge's batches and the waiting requests
+## Proof queue batches and waiting requests (`createProofQueueBatchesMachine`)
 
 ![Proof queue batches graph](src/proofQueue/ProofQueueBatchesGraph.svg)
 
@@ -382,15 +382,17 @@ const waiting$ = combineLatest([
 ]).pipe(map(([{ data }, job]) => sortWaitingProofRequests(data.view.waiting, data.view.finalizedBlock, job)));
 ```
 
+### Proof queue batch requests (`createProofQueueBatchRequestsMachine`)
+
 ![Proof queue batch requests graph](src/proofQueue/ProofQueueBatchRequestsGraph.svg)
 
 `createProofQueueBatchRequestsMachine(connections, proofQueueAddress, batch, query)` reads one committed batch's requests (the target's only, when given) over the batch's own block and request id range. A committed batch never changes, so they are never read again.
 
-## A submitting address's requests
+## Proof requests by submitting address
 
 The submitting address is the contract that enqueued the requests: the queue records `msg.sender` as each request's `target`. Its requests are found from the queue's `ProofRequested` logs, filtered on `target`, in block ranges small enough for providers' limits, from `fromBlock` (e.g. the queue's deployment block). Each request comes back with its snapshot: `unprocessed`, or `proofAvailable` with the batch covering it, ready for `createProofRequestWitnessMachine`.
 
-### Paged history
+### Proof request history (`createProofRequestHistoryMachine`)
 
 ![Proof request history graph](src/proofRequest/ProofRequestHistoryGraph.svg)
 
@@ -417,7 +419,7 @@ proofRequestHistory.loadMore(); // the next page, while current
 
 The first page loads at once. `current` holds the requests loaded so far in `data.loaded`, newest first with `desc` or oldest first with `asc`, and `loadMore()` reads the next page (`refreshing`), appended to them. The page that exhausts the block range moves to `allLoaded`.
 
-### Live view of the newest requests
+### Latest proof requests (`createLatestProofRequestsMachine`)
 
 ![Latest proof requests graph](src/proofRequest/LatestProofRequestsGraph.svg)
 
@@ -435,9 +437,9 @@ const latestProofRequests = createLatestProofRequestsMachine(
 
 It shows the newest `count` requests in `data.view` and keeps them current: new requests enter at the top, and requests move from `unprocessed` to `proofAvailable` as the bridge commits their batches. A request the view showed that a read no longer finds, by its id, was removed by an Ethereum reorg (`requestDroppedByReorg`): the view loads again from `fromBlock` and refills from older blocks, keeping the view on screen meanwhile. A request pushed out of the view by newer ones is not one of them. It never ends on its own.
 
-## An app's own values
+## Custom read machines (`startReadThroughConnectionsMachine`)
 
-A value of the app's own, such as a read of its own contract, is a machine too: its graph spreads `readThroughConnectionsOf`, given the data the value holds, and `startReadThroughConnectionsMachine` starts it, the way every machine in the SDK is started. The read is given `clients`, one runner per chain, and runs only inside the machine; the machine waits out lost connections and retries failed reads as described in [A value read through the connections](#a-value-read-through-the-connections).
+A value of the app's own, such as a read of its own contract, is a machine too: its graph spreads `readThroughConnectionsOf`, given the data the value holds, and `startReadThroughConnectionsMachine` starts it, the way every machine in the SDK is started. The read is given `clients`, one runner per chain, and runs only inside the machine; the machine waits out lost connections and retries failed reads as described in [Read machines](#read-machines-readthroughconnectionsof).
 
 ```ts
 import { define } from '@yaw-rx/ystate';
@@ -460,17 +462,13 @@ const tokenSymbol = startReadThroughConnectionsMachine(TokenSymbolGraph, {
 });
 ```
 
-`refreshOn` says when the value is due to be read again. It is followed from before each read: its first emission says it is following, and each later one that a refresh is due. A change on a chain is `changesOf$(changes)` of a chain changes machine the reading machine's creator starts and passes in `owns`, so the reading machine's `close()` closes it too (see [Chain changes](#chain-changes)); it says it is following once that machine knows the block it starts from; a trigger with no starting point (a timer, a signal, a Nori topic) goes through `dueOn(trigger$)`, and a value that cannot change uses `dueOn(NEVER)`. `needs` names the chains the read goes through (both by default), or one transport such as `'ethereum.wallet'`, which the read reaches through `clients.transport`; `kind: 'logs'` sends Ethereum's part through its logs order. A graph with states of its own passes their transitions as `ownTransitions`, given the shared read's outcomes, and `start` starts it in another node with its data.
+`refreshOn` says when the value is due to be read again. It is followed from before each read: its first emission says it is following, and each later one that a refresh is due. A change on a chain is `changesOf$(changes)` of a chain changes machine the reading machine's creator starts and passes in `owns`, so the reading machine's `close()` closes it too (see [Chain change machine](#chain-change-machine-createchainchangesmachine)); it says it is following once that machine knows the block it starts from; a trigger with no starting point (a timer, a signal, a Nori topic) goes through `dueOn(trigger$)`, and a value that cannot change uses `dueOn(NEVER)`. `needs` names the chains the read goes through (both by default), or one transport such as `'ethereum.wallet'`, which the read reaches through `clients.transport`; `kind: 'logs'` sends Ethereum's part through its logs order. A graph with states of its own passes their transitions as `ownTransitions`, given the shared read's outcomes, and `start` starts it in another node with its data.
 
-## Minting and pausing on Tempo
+## Minting and pausing on Tempo (`mintCall`, `mintERC20Call`, `applyPauseCall`)
 
 The token bridge is built on the queue: a deposit locked in `NoriTokenBridge` on Ethereum, ETH (`lockTokens`) or an ERC-20 (`lockERC20`), is a proof request whose leaf commits to `sha256` of the Tempo recipient's address, and `syncPause` makes an ERC-20's pause state one too. Once the request's snapshot is `proofAvailable`, its witness machine's `verifiedWitness` is its witness in the shape the Tempo bridge takes, and the recipient mints with it: `mintCall` for nETH, `mintERC20Call` for the ERC-20's TIP-20 mirror. Anyone applies a proven pause state to the mirror with `applyPauseCall`. Each returns the call as data, `{ to, data, value }`, which a transaction machine sends as one Tempo transaction; the sender pays the fee in its fee token.
 
-### Sending a transaction
-
-![Wallet transaction graph](src/rpc/connection/WalletTransactionGraph.svg)
-
-![Signer transaction graph](src/transaction/SignerTransactionGraph.svg)
+### Transaction machines
 
 A transaction is a machine made for one call, which it holds as its starting data, and sent only when the app asks. `createWalletTransactionMachine(connections, chain, call, options?)` sends it through the user's wallet on `chain`; `createSignerTransactionMachine(connections, chain, signer, call, options?)` sends it with a signer of the app's own, such as an ethers `Wallet`. Both graphs spread the same shape, `sentTransactionOf`, and add the node that sends:
 
@@ -483,6 +481,12 @@ A transaction is a machine made for one call, which it holds as its starting dat
 - `confirmed`, `reverted`, `replaced` and `closed` are terminal.
 
 A send again whose nonce the node still holds pending is refused by the node, and `sendFailed` says so. Tempo refuses any transaction carrying a value, so a call with a `value` on Tempo throws a `RangeError` when the machine is made.
+
+#### Wallet transaction (`createWalletTransactionMachine`)
+
+![Wallet transaction graph](src/rpc/connection/WalletTransactionGraph.svg)
+
+Sent through the user's wallet on `chain`, gated on that chain's wallet being ready. `askingToSign` is the wallet showing the transaction; the user saying no is `declined`, and the wallet dropping while asking is `sendFailed`. The wallet picks the nonce, so a send again after `dropped` cannot pin it.
 
 ```ts
 import { createWalletTransactionMachine, mintCall, tokenBridgeInterface } from '@nori-zk/nori-bridge-tempo-sdk';
@@ -503,7 +507,11 @@ minting.state$.subscribe(({ node, data }) => {
 });
 ```
 
-A signer of the app's own sends the same way:
+#### Signer transaction (`createSignerTransactionMachine`)
+
+![Signer transaction graph](src/transaction/SignerTransactionGraph.svg)
+
+Sent with an ethers `Signer` of the app's own, such as a `Wallet`, gated on `chain`'s connection. `sending` signs and sends it; a send again after `dropped` pins the dropped transaction's nonce.
 
 ```ts
 import { applyPauseCall, createSignerTransactionMachine, tokenBridgeInterface } from '@nori-zk/nori-bridge-tempo-sdk';
@@ -518,7 +526,7 @@ const pausing = createSignerTransactionMachine(
 pausing.send();
 ```
 
-### The token bridge's values
+### Token bridge read machines
 
 The token bridge's values on Tempo are machines, each read at once and kept current; `current` holds the value. Each holds the account, recipient or token it is made for in its data from its first state on.
 
@@ -530,23 +538,23 @@ The token bridge's values on Tempo are machines, each read at once and kept curr
 | `createTokenBalanceMachine(connections, token, account)` | `balance`: a TIP-20 balance (nETH, a mirror, a fee token) | the token's `Transfer` out of or into the account, a mint included |
 | `createFeeTokenMachine(connections, account)` | `feeToken`: the fee token the account chose, `undefined` when none | the fee manager's `UserTokenSet` for the account |
 
-#### Minted so far
+#### Minted so far (`createMintedSoFarMachine`)
 
 ![Minted so far graph](src/tokenBridge/MintedSoFarGraph.svg)
 
-#### An ERC-20's mirror
+#### ERC-20 mirror (`createMirrorMachine`)
 
 ![Mirror graph](src/tokenBridge/MirrorGraph.svg)
 
-#### The last pause applied
+#### Last pause applied (`createLastPauseAppliedMachine`)
 
 ![Last pause applied graph](src/tokenBridge/LastPauseAppliedGraph.svg)
 
-#### A token balance
+#### Token balance (`createTokenBalanceMachine`)
 
 ![Token balance graph](src/tokenBridge/TokenBalanceGraph.svg)
 
-#### The fee token
+#### Fee token (`createFeeTokenMachine`)
 
 ![Fee token graph](src/tokenBridge/FeeTokenGraph.svg)
 
@@ -557,6 +565,99 @@ The token bridge's values on Tempo are machines, each read at once and kept curr
 | `applyPauseCall(bridgeAddress, pauseWitness, proofQueueBatchIndex)` |
 
 Minting is delta-based: a deposit's leaf carries what was locked so far, and the bridge mints what was not yet minted; minting again with nothing new locked is refused with `ZeroMintAmount`. `applyPause` accepts only a batch newer than the mirror's last pause applied. A transaction that reverts after it was sent ends `reverted`; one the contract refuses at gas estimation ends `refused`, named through `tokenBridgeInterface`.
+
+## API
+
+Everything below comes from `@nori-zk/nori-bridge-tempo-sdk`. Every machine also exports its graph (`…Graph`, the definition its image is drawn from) and its state type (`…State`, or `…NodeUnion`, from `StateUnion<typeof …Graph.nodes>`), and its options or query type where it takes one.
+
+### Connection exports
+
+| Export | What it is |
+| --- | --- |
+| `createConnections(options)` | The app's connections: `network`, `ethereum`, `tempo`, `nori`, `close()` ([Connections](#connections-createconnections)) |
+| `createConnectionStatusMachine`, `httpStatus`, `websocketStatus`, `walletStatus`, `networkStatus` | A status machine over any transports, and each transport's states as statuses ([Connection status](#connection-status-createconnectionstatusmachine)) |
+| `createChainChangesMachine(chain, filter?)`, `changesOf$` | Whether a chain has changed, and the trigger a reading machine gates on ([Chain change machine](#chain-change-machine-createchainchangesmachine)) |
+| `PUBLIC_TEMPO_NETWORKS`, `tempoWebsocketUrlOf(rpcUrl)` | Tempo's public networks (mainnet, Moderato) with their chain ids and URLs, and the websocket URL for an http RPC URL |
+| `DEFAULT_NORI_WEBSOCKET_URL`, `DEFAULT_CONNECTIVITY_PROBE_URLS` | Nori's websocket, and the network check's endpoints |
+| `ConnectionNotReadyError`, `NoWalletConfiguredError` | A transport not ready, and a wallet the app gave none of |
+| `requestErrorCode`, `USER_REJECTED_REQUEST` | An EIP-1193 error's code, and the user's refusal (4001) |
+
+### Read machine exports
+
+| Machine | Section |
+| --- | --- |
+| `createBridgeStateMachine` | [Tempo bridge state](#tempo-bridge-state-createbridgestatemachine) |
+| `createEthereumBlocksMachine` | [Ethereum latest and finalized blocks](#ethereum-latest-and-finalized-blocks-createethereumblocksmachine) |
+| `createCommittedProofQueueBatchesMachine` | [Committed proof queue batches](#committed-proof-queue-batches-createcommittedproofqueuebatchesmachine) |
+| `createProofQueueHeadMachine` | [Proof queue head](#proof-queue-head-createproofqueueheadmachine) |
+| `createTransactionReceiptMachine` | [Transaction receipt](#transaction-receipt-createtransactionreceiptmachine) |
+| `createProofRequestStateMachine` | [Proof request state](#proof-request-state-createproofrequeststatemachine) |
+| `createProofRequestWitnessMachine` | [Proof request witness](#proof-request-witness-createproofrequestwitnessmachine) |
+| `createUnprocessedProofRequestStateMachine` | [Unprocessed proof request progress](#unprocessed-proof-request-progress-createunprocessedproofrequeststatemachine) |
+| `createProofQueueBatchesMachine` | [Proof queue batches and waiting requests](#proof-queue-batches-and-waiting-requests-createproofqueuebatchesmachine) |
+| `createProofQueueBatchRequestsMachine` | [Proof queue batch requests](#proof-queue-batch-requests-createproofqueuebatchrequestsmachine) |
+| `createProofRequestHistoryMachine` | [Proof request history](#proof-request-history-createproofrequesthistorymachine) |
+| `createLatestProofRequestsMachine` | [Latest proof requests](#latest-proof-requests-createlatestproofrequestsmachine) |
+| `createMintedSoFarMachine` | [Minted so far](#minted-so-far-createmintedsofarmachine) |
+| `createMirrorMachine` | [ERC-20 mirror](#erc-20-mirror-createmirrormachine) |
+| `createLastPauseAppliedMachine` | [Last pause applied](#last-pause-applied-createlastpauseappliedmachine) |
+| `createTokenBalanceMachine` | [Token balance](#token-balance-createtokenbalancemachine) |
+| `createFeeTokenMachine` | [Fee token](#fee-token-createfeetokenmachine) |
+
+### Transaction exports
+
+| Export | What it is |
+| --- | --- |
+| `createWalletTransactionMachine` | A transaction through the wallet on `chain` ([Wallet transaction](#wallet-transaction-createwallettransactionmachine)) |
+| `createSignerTransactionMachine` | A transaction with the app's signer on `chain` ([Signer transaction](#signer-transaction-createsignertransactionmachine)) |
+| `mintCall`, `mintERC20Call`, `applyPauseCall` | The Tempo bridge's calls, each `{ to, data, value }` ([Minting and pausing on Tempo](#minting-and-pausing-on-tempo-mintcall-minterc20call-applypausecall)) |
+| `tokenBridgeInterface` | The Tempo bridge's ABI: what its calls are encoded with, and what names a refusal (`options.errors`) |
+| `NotReadyToSendError` | A send request while what sends it is not usable |
+
+### Nori exports
+
+| Export | What it is |
+| --- | --- |
+| `getNoriBridgeInfraTransitions(nori)` | The pipeline's transitions and `stage$` ([Nori prover pipeline](#nori-prover-pipeline-getnoribridgeinfratransitions)) |
+| `noriBridgeInfraState$`, `noriBridgeInfraTimings$`, `noriBridgeInfraEthState$`, `noriBridgeInfraTransitionNotices$`, `noriBridgeInfraSystemNotices$`, `noriBridgeInfraStateWithTimings$` | Nori's topics ([Nori websocket topics](#nori-websocket-topics)) |
+| `getCommitTimes`, `jobTimingsOf`, `getFinalityTimeRemainingSec`, `NORI_JOB_STAGES`, `FALLBACK_NORI_JOB_TIMINGS`, `ETHEREUM_EPOCH_SEC`, `MAX_BATCH_SIZE` | Nori's job loop and its timings ([Unprocessed proof request progress](#unprocessed-proof-request-progress-createunprocessedproofrequeststatemachine)) |
+| `sortWaitingProofRequests(waiting, finalizedBlock, job?)` | The waiting requests by what they wait on |
+| `arrived` | A Nori topic's values stamped with when they arrived (`{ value, atMs }`) |
+| `BridgeProofRequestProcessingStatus` | Where Nori's pipeline holds an unprocessed request |
+
+### Custom machine exports
+
+| Export | What it is |
+| --- | --- |
+| `readThroughConnectionsOf(data)`, `startReadThroughConnectionsMachine(graph, options)`, `dueOn(trigger$)` | A value of the app's own, read and kept current ([Custom read machines](#custom-read-machines-startreadthroughconnectionsmachine)) |
+| `sentTransactionOf(sending)` | The send-and-follow shape a transaction graph spreads, with its own sending node |
+| `readThroughConnectionsTransitions`, `withOutcome` | The read shape's transitions, and outcomes split by a field |
+| `ProofRequestState` | A snapshot's `state`: `undetermined`, `unprocessed`, `proofAvailable` |
+
+`@nori-zk/nori-bridge-tempo-sdk/utils` holds `stateOf$`, `dataOnEntry$`, `atNode`, `AsNodeData`, `StartedMachine` and `GraphState`, and `@nori-zk/nori-bridge-tempo-sdk/program` the Tempo contracts' ethers types, factories and ABIs.
+
+### Error classes
+
+| Error | When |
+| --- | --- |
+| `ProofRequestTransactionNotMinedError` | The transaction that enqueues a proof request is not mined yet |
+| `ProofRequestWitnessRootMismatchError` | A rebuilt batch root differs from the committed one |
+| `ProofQueueBatchSearchError` | No committed batch covers a request (`requestId`) |
+| `MalformedProofRequestError` | A proof request whose fields do not decode (`requestId`); for an app's own reads, as no read of the SDK raises it |
+
+### Exported types
+
+Besides each machine's state type, these are exported as types:
+
+| Area | Types |
+| --- | --- |
+| Connections | `ConnectionsOptions`, `NetworkOptions`, `EthereumOrder`, `Connections`, `Ethereum`, `Tempo`, `Nori`, `ProofRequestConnections`, `ConnectionName`, `ChainTransportName`, `ReadNeed`, `TransportName`, `TransportState`, `LiveConnectionStatus`, `StatusTransport`, `EthereumSubscriptionSocket`, `EthereumProvider`, `Eip1193EventProvider`, `TempoNetwork`, `TempoNetworkEndpoints`, `EthereumHealth`, `WalletInfo`, `WalletAccount` |
+| Custom machines | `ChainRead`, `ConnectedReadClients`, `ReadThroughConnectionsOptions`, `ReadThroughConnectionsMachineOptions`, `ReadThroughConnectionsRead`, `ReadRetryBackoff`, `ChainChanges`, `EthereumLogsFilter`, `EthereumLogNotification`, `EthereumNewHeadNotification`, `ProofQueueBatchCommittedNotification`, `TempoTransactionReceiptNotification` |
+| Sending | `TransactionCall`, `TransactionToSend`, `SentTransaction`, `TransactionMachineOptions` |
+| Chain values | `TempoBridgeState` (the bridge's `state()`), `LastPauseApplied` |
+| Proof requests | `FollowedProofRequest`, `ProofRequest`, `ProofRequestStateSnapshot`, `UndeterminedProofRequestSnapshot`, `UnprocessedProofRequestSnapshot`, `ProofAvailableProofRequestSnapshot`, `ProofRequestStateSnapshotRequest`, `RequestLeaf`, `RequestWitness`, `VerifiedRequestWitness`, `ProofRequestHistoryQuery`, `ProofRequestHistoryAddresses`, `ProofRequestHistoryPage`, `ProofRequestHistoryEntry`, `ProofRequestHistoryCursor`, `ProofRequestHistoryOrder`, `ProofRequestsByTargetQuery`, `ProofRequestsByTargetPage`, `LatestProofRequestsQuery`, `ProofRequestCounts` |
+| Proof queue | `ProofQueueBatchesQuery`, `ProofQueueBatchesSources`, `ProofQueueBatchesView` (`EMPTY_PROOF_QUEUE_BATCHES_VIEW` before the first read), `ShownProofQueueBatch`, `ProofQueueBatchSummary`, `FoundProofQueueBatch`, `ProofQueueBatchRequestsQuery`, `ProofRequestBatchEntry`, `EnqueuedProofRequest`, `EnqueuedProofRequestsQuery` |
+| Nori | `NoriBridgeInfraTransitions`, `NoriBridgeInfraStage`, `NoriBridgeInfraStageSince`, `NoriStage`, `NoriJobStage`, `NoriJobTimings`, `NoriJob`, `CommitTimes`, `EthereumFinality`, `WaitingProofRequests`, `Arrived` |
 
 ## Development
 

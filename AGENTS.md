@@ -74,6 +74,10 @@ cargo run -p nori-cli -- deploy --help
   `hardhat.config.ts` adds `./lib/sp1-contracts/contracts/src/v6.1.0`. Its
   Plonk verifier is also named `SP1Verifier`: always use the fully
   qualified `lib/sp1-contracts/contracts/src/v6.1.0/SP1VerifierGroth16.sol:SP1Verifier`.
+  Typechain's root `types/ethers-contracts/index.ts` re-exports one
+  `SP1Verifier`, whichever comes first in Hardhat's shuffled artifact order;
+  `tempo/stabilize-types.mjs` pins it to the Groth16 one, so every build
+  writes the same file.
 - TIP-20 `hasRole` takes the account first: `hasRole(address,bytes32)`.
 
 ## Invariants that bite if broken

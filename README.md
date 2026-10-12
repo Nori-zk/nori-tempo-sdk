@@ -265,10 +265,11 @@ Security:
 
 ## ERC-20 mirrors
 
-Each ERC-20 locked on Ethereum is mirrored on Tempo by its own TIP-20, backed
-1:1 by what the bridge holds, and the ERC-20's pause follows it to the
-mirror. This is the bridge adapter of Tempo's
-[ERC-20 migration guide](https://tempo.xyz/developers/docs/guide/issuance/migrate-erc20-to-tip20):
+Each ERC-20 locked on Ethereum is mirrored on Tempo by its own TIP-20, and
+the ERC-20's pause follows it to the mirror. What the bridge mints is backed
+1:1 by what it holds; on an adopted mirror the issuer can also mint, and that
+supply is the issuer's, not backed by locks. This is the bridge adapter of
+Tempo's [ERC-20 migration guide](https://tempo.xyz/developers/docs/guide/issuance/migrate-erc20-to-tip20):
 the ERC-20 stays canonical on Ethereum, holders lock it there, and the adapter
 holds `ISSUER_ROLE` and mints only what a proof shows was locked.
 
@@ -292,10 +293,12 @@ Setup, once per ERC-20, one of two ways:
 `adoptMirror` also refuses an address `TIP20Factory.isTIP20` does not
 recognise, nETH, and a TIP-20 already mirroring another ERC-20. A mint that
 the issuer's supply cap or transfer policy refuses reverts; the recipient
-claims again once they allow it. `ethTokenOf(tip20)` names the ERC-20 a
-mirror stands for, and `erc20TotalMinted(ethToken)` counts what the bridge
-minted to everyone, never more than `totalLockedERC20BU(ethToken)` on
-Ethereum.
+claims again once they allow it. An issuer that revokes the bridge's
+`ISSUER_ROLE`, or blacklists a holder, leaves that holder's ERC-20 locked on
+Ethereum for good: there is no refund path, and a mirror is never re-linked.
+`ethTokenOf(tip20)` names the ERC-20 a mirror stands for, and
+`erc20TotalMinted(ethToken)` counts what the bridge minted to everyone, never
+more than `totalLockedERC20BU(ethToken)` on Ethereum.
 
 The currency is immutable: pick what one unit stays about 1:1 with (`"USD"`
 for a USD stablecoin, `"BTC"` for wrapped bitcoin, its own symbol for an
@@ -329,6 +332,12 @@ Pause:
    the unpause. The pause reaches Tempo after Ethereum finality and
    proving. No signer copies it: the proof replaces the sync signer an
    issuer would otherwise run.
+
+On an adopted mirror the issuer, as admin, can unpause the TIP-20 after the
+bridge paused it, and a pause it sets only on Tempo is undone by anyone
+through `syncPause` and `applyPause` of the unpaused ERC-20. Ethereum's pause
+is the source of truth: to pause the Tempo token, pause the ERC-20, or first
+revoke the bridge's `UNPAUSE_ROLE`.
 
 Fees and limits:
 

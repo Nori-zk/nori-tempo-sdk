@@ -246,8 +246,14 @@ is missing, with `NotTIP20` for an address `TIP20Factory.isTIP20` does not
 recognise (or nETH), and with `AlreadyAMirror` for a TIP-20 that already
 mirrors another ERC-20. The issuer stays responsible for its configuration:
 a supply cap below what holders lock, or a transfer policy that refuses a
-recipient, holds that recipient's mint back until it changes, and revoking
-the bridge's `ISSUER_ROLE` stops minting.
+recipient, holds that recipient's mint back until it changes. Revoking the
+bridge's `ISSUER_ROLE`, or blacklisting a holder, leaves that holder's ERC-20
+locked on Ethereum for good: there is no refund path, and a mirror is never
+re-linked. What the bridge mints is backed by locks; what the issuer mints
+itself is not. The issuer, as admin, can unpause the TIP-20 after the bridge
+paused it, and a pause it sets only on Tempo is undone by anyone through
+`syncPause` and `applyPause` of the unpaused ERC-20: to pause the Tempo token,
+pause the ERC-20, or first revoke the bridge's `UNPAUSE_ROLE`.
 
 *Output on a local `anvil --network tempo`:*
 
@@ -295,8 +301,9 @@ the sender funded with its fee token (pathUSD).
 
 ### Keep each mirror's pause in step with its ERC-20
 
-A mirror is paused and unpaused only by proof of its ERC-20's `paused()` on
-Ethereum, in two permissionless calls:
+A created mirror is paused and unpaused only by proof of its ERC-20's
+`paused()` on Ethereum (an adopted one also by its issuer, see §5), in two
+permissionless calls:
 
 1. On Ethereum, `NoriTokenBridge.syncPause(token)` copies `paused()` into the
    bridge and requests a proof of it. The caller pays the queue fee in ETH,
